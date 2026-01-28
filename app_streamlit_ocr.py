@@ -12,6 +12,9 @@ Enhancements:
   - Chunks it using ocr_output_chunking_utils.py
   - Provides a stub hook to load chunks into Oracle Vector Store (you will add code)
 
+Fix:
+- When a NEW PDF is uploaded, clear previous OCR output and chunk/load status.
+
 Author: Luigi Saetta
 Python: 3.11+
 """
@@ -100,7 +103,7 @@ def print_chunks_loaded(langchain_docs) -> None:
 
 def oracle_vector_store_load(langchain_docs) -> None:
     """
-    hook for Oracle Vector Store loading.
+    Hook for Oracle Vector Store loading.
 
     Replace the body of this function with your actual code, e.g.:
       - create/connect to Oracle VS collection
@@ -128,6 +131,18 @@ def oracle_vector_store_load(langchain_docs) -> None:
                 print_chunks_loaded(langchain_docs)
 
     logger.info("oracle_vector_store_load called with %s chunks.", len(langchain_docs))
+
+
+def _reset_outputs_for_new_upload() -> None:
+    """
+    Clear OCR/chunk outputs when the user uploads a different PDF.
+
+    This prevents showing stale OCR text and stale chunk/load status for a new file.
+    """
+    st.session_state["output_text"] = None
+    st.session_state["out_path"] = None
+    st.session_state["chunks_count"] = None
+    st.session_state["last_chunk_error"] = None
 
 
 # ----------------------------
@@ -234,6 +249,21 @@ if "chunks_count" not in st.session_state:
     st.session_state["chunks_count"] = None
 if "last_chunk_error" not in st.session_state:
     st.session_state["last_chunk_error"] = None
+
+# NEW: keep track of which file is currently loaded; when it changes, reset output
+if "uploaded_file_key" not in st.session_state:
+    st.session_state["uploaded_file_key"] = None
+
+current_upload_key = None
+if uploaded is not None:
+    # size+name is usually enough; if you upload a file with same name/size but different
+    # content, add a hash here (costs CPU).
+    current_upload_key = f"{uploaded.name}:{uploaded.size}"
+
+if current_upload_key != st.session_state["uploaded_file_key"]:
+    # Upload changed (including: None -> file, file -> other file, file -> None)
+    st.session_state["uploaded_file_key"] = current_upload_key
+    _reset_outputs_for_new_upload()
 
 
 with left:
@@ -382,8 +412,6 @@ if chunk_load_btn:
             )
             docs = chunks_to_langchain_documents(chunks)
 
-            # ---- Your Vector Store load goes here ----
-            # Replace oracle_vector_store_load_stub with your real implementation.
             oracle_vector_store_load(docs)
 
             st.session_state["chunks_count"] = len(docs)

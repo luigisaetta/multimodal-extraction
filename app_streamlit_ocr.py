@@ -53,7 +53,7 @@ MODEL_IDS = [
 ]
 
 st.set_page_config(page_title="PDF Scanner OCR", layout="wide")
-st.title("PDF Scanner → OCR with Multimodal LLM")
+st.title("Multimodal OCR & Figure Extraction for Technical PDF")
 
 
 def type_badge(_label: str) -> None:
@@ -306,7 +306,7 @@ with right:
             use_container_width=True,
         )
     else:
-        st.caption("Run OCR to see extracted text here.")
+        st.caption("Run OCR to see extracted text and figures description here.")
 
 
 # ----------------------------

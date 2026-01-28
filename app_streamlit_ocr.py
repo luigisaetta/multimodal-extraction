@@ -182,7 +182,10 @@ with st.sidebar:
         describe_figures = st.checkbox(
             "Describe figures (append [FIGURES] per page)",
             value=True,
-            help="Adds a second multimodal call per page to describe diagrams/drawings. Tables are ignored.",
+            help=(
+                "Adds a second multimodal call per page to describe diagrams/drawings. "
+                "Tables are ignored."
+            ),
         )
 
     st.header("Output")
@@ -206,7 +209,10 @@ with st.sidebar:
         "Chunk & Load to Vector Store",
         type="secondary",
         use_container_width=True,
-        help="Chunks the current OCR output text (shown on the right) and calls your Vector Store loader.",
+        help=(
+            "Chunks the current OCR output text (shown on the right) "
+            "and calls your Vector Store loader."
+        ),
     )
 
 
@@ -238,7 +244,8 @@ with left:
     else:
         st.success(f"Uploaded: {uploaded.name} ({uploaded.size} bytes)")
 
-        # Save uploaded PDF to a temp file for classification (so classification appears immediately).
+        # Save uploaded PDF to a temp file for classification
+        # (so classification appears immediately).
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_pdf_path = Path(tmpdir) / uploaded.name
             tmp_pdf_path.write_bytes(uploaded.getbuffer())
@@ -338,12 +345,12 @@ if run_btn:
 
         with st.spinner("Running text-extraction pipeline..."):
             try:
-                text = run_ocr_pipeline(tmp_pdf_path, cfg)
+                TEXT = run_ocr_pipeline(tmp_pdf_path, cfg)
             except Exception as e:
                 st.error(f"OCR failed: {type(e).__name__}: {e}")
                 st.stop()
 
-        st.session_state["output_text"] = text
+        st.session_state["output_text"] = TEXT
         st.session_state["out_path"] = str(out_path)
         st.session_state["chunks_count"] = None
         st.session_state["last_chunk_error"] = None

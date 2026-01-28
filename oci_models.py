@@ -15,7 +15,7 @@ from langchain_oci import OCIGenAIEmbeddings
 from config import (
     AUTH,
     EMBED_MODEL_ID,
-    LLM_MODEL_ID,
+    DEFAULT_MODEL_ID,
     DEBUG,
     SERVICE_ENDPOINT,
     TEMPERATURE,
@@ -50,7 +50,7 @@ def get_model_provider(model_name: str) -> str:
     return provider if provider else "unknown"
 
 
-def get_llm(model_id=LLM_MODEL_ID, temperature=TEMPERATURE, max_tokens=MAX_TOKENS):
+def get_llm(model_id=DEFAULT_MODEL_ID, temperature=TEMPERATURE, max_tokens=MAX_TOKENS):
     """
     Initialize and return an instance of ChatOCIGenAI with the specified configuration.
 

@@ -26,5 +26,5 @@ CONNECT_ARGS = {
     "wallet_password": VECTOR_WALLET_PWD,
 }
 
-# oraemeaint
+# your OCI Compartment OCID
 COMPARTMENT_ID = "your.ocid"

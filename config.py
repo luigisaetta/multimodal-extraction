@@ -9,7 +9,6 @@ Description:
 """
 
 DEBUG = False
-ADB = True
 
 # General OCI
 AUTH = "API_KEY"
@@ -35,4 +34,4 @@ CHUNK_SIZE = 2048
 CHUNK_OVERLAP = 100
 
 # section for scanned pdf loading
-CIG_COLLECTION_NAME = "CIGDOCS01"
+COLLECTION_NAME = "CIGDOCS01"

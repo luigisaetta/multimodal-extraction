@@ -43,7 +43,6 @@ from typing import Dict, List, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-
 # Matches the footer emitted by your OCR pipeline
 # Example: "\n\n--- PAGE 12 ---\n\n"
 _PAGE_FOOTER_RE = re.compile(r"(?im)^\s*---\s*PAGE\s+(\d+)\s*---\s*$")

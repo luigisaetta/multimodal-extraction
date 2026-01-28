@@ -36,7 +36,7 @@ from oraclevs_4_db_loading import OracleVS4DBLoading
 from oci_models import get_embedding_model
 from utils import get_console_logger
 
-from config import DEBUG, CIG_COLLECTION_NAME
+from config import DEBUG, COLLECTION_NAME
 
 logger = get_console_logger()
 
@@ -44,11 +44,10 @@ logger = get_console_logger()
 # check that you have the right to use the models you list here
 # license, availability in your tenant, etc.
 MODEL_IDS = [
+    "openai.gpt-5.2",
     "meta.llama-4-maverick-17b-128e-instruct-fp8",
     "google.gemini-2.5-pro",
-    "openai.gpt-5.2",
     "xai.grok-4-1-fast-non-reasoning",
-    "xai.grok-4",
     "cohere.command-a-vision v1.0",
     # add others you support via get_llm(...)
 ]
@@ -86,6 +85,19 @@ def classify_uploaded_pdf(tmp_pdf_path_str: str) -> tuple[str, str]:
     return _label, (_reason or "")
 
 
+def print_chunks_loaded(langchain_docs) -> None:
+    """Debug: print loaded chunks."""
+    for i, doc in enumerate(langchain_docs):
+        print("----------------------------")
+        print("Chunk n. ", i + 1)
+        print("")
+        print(f"Doc page_content:\n{doc.page_content}")
+        print("")
+        print(f"Doc metadata:\n{doc.metadata}")
+        print("----------------------------")
+        print("")
+
+
 def oracle_vector_store_load(langchain_docs) -> None:
     """
     hook for Oracle Vector Store loading.
@@ -105,7 +117,7 @@ def oracle_vector_store_load(langchain_docs) -> None:
 
             oracle_vs = OracleVS4DBLoading(
                 client=conn,
-                table_name=CIG_COLLECTION_NAME,
+                table_name=COLLECTION_NAME,
                 embedding_function=get_embedding_model(),
             )
 
@@ -113,18 +125,9 @@ def oracle_vector_store_load(langchain_docs) -> None:
 
             if DEBUG:
                 # print the chunks added
-                for i, doc in enumerate(langchain_docs):
-                    print("----------------------------")
-                    print("Chunk n. ", i + 1)
-                    print("")
-                    print(f"Doc page_content:\n{doc.page_content}")
-                    print("")
-                    print(f"Doc metadata:\n{doc.metadata}")
-                    print("----------------------------")
-                    print("")
-    logger.info(
-        f"oracle_vector_store_load_stub called with {len(langchain_docs)} chunks."
-    )
+                print_chunks_loaded(langchain_docs)
+
+    logger.info("oracle_vector_store_load called with %s chunks.", len(langchain_docs))
 
 
 # ----------------------------

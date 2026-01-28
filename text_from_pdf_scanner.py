@@ -12,6 +12,7 @@ Features:
 Author: Luigi Saetta
 Python: 3.11+
 """
+
 import os
 import argparse
 import base64

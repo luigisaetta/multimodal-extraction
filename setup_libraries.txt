@@ -1,0 +1,9 @@
+#python libraries to install
+pip install oci -U
+pip install oracledb -U
+pip install langchain-oci -U
+pip install langchain-oracledb -U
+pip install streamlit
+pip install streamlit_pdf_viewer
+pip install pypdfium2
+pip install pypdf

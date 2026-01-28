@@ -28,6 +28,8 @@ import pypdfium2 as pdfium
 from langchain_core.messages import HumanMessage
 
 from oci_models import get_llm
+
+# to get the prompts
 from prompts import build_ocr_text_prompt, build_figures_prompt
 from utils import get_console_logger
 

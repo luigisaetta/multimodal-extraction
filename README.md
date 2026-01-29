@@ -76,9 +76,15 @@ This is intentionally *not* a generic OCR demo, but a foundation for building **
 
 ---
 
+## Setup
+
+* Create a conda environment with Python 3.11
+* install required libraries, following [setup_libraries](./setup_libraries.txt)
+* configure NGINX following [nginx config](./ngingx_streamlit_config)
+
 ## License
 
-MIT License
+This code is released under **MIT** License
 
 see [LICENSE](./LICENSE)
 

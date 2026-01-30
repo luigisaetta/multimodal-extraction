@@ -31,6 +31,7 @@ def build_ocr_text_prompt(extra_prompt: str = "") -> str:
         "- Keep units and symbols exactly.\n"
         "- If unreadable, write [ILLEGIBLE].\n"
     )
+
     extra_prompt = (extra_prompt or "").strip()
     if extra_prompt:
         base += "\nAdditional instructions:\n" + extra_prompt + "\n"

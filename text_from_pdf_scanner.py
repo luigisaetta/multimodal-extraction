@@ -239,7 +239,8 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     logger.info("Rendered %d pages.", len(pages))
 
     logger.info("Loading LLM: %s", cfg.model_id)
-    llm = get_llm(model_id=cfg.model_id, temperature=0.0, max_tokens=4000)
+    # changed: temperature and max_tokens from config
+    llm = get_llm(model_id=cfg.model_id)
 
     parts: List[str] = []
     filename = os.path.basename(pdf_path)

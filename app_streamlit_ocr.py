@@ -514,6 +514,11 @@ if nav_page == "OCR & Load":
                 max_side=int(ui_state["max_side"]),
                 jpeg_quality=int(ui_state["jpeg_quality"]),
                 describe_figures=bool(ui_state["describe_figures"]),
+                text_extraction_mode="auto",
+                input_pdf_type=st.session_state.get(
+                    "pdf_type_label"
+                ),  # TEXT_PDF / SCANNED_PDF / MIXED_OR_UNKNOWN
+                min_text_chars_page=50,
             )
 
             with st.spinner("Running text-extraction pipeline..."):

@@ -20,15 +20,16 @@ License: MIT
 
 from __future__ import annotations
 
+from pathlib import Path
 import argparse
 import base64
 import io
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional, Literal
 
+from docling.document_converter import DocumentConverter
 from PIL import Image
 import pypdfium2 as pdfium
 from pypdf import PdfReader
@@ -37,6 +38,7 @@ from langchain_core.messages import HumanMessage
 from oci_models import get_llm
 from prompts import build_ocr_text_prompt, build_figures_prompt
 from utils import get_console_logger
+from config import DOCKLING_ENABLED
 
 logger = get_console_logger()
 
@@ -192,6 +194,46 @@ def extract_text_pages_pypdf(
     return page_texts
 
 
+def extract_text_pages_docling(
+    pdf_path: Path,
+    max_pages: Optional[int] = None,
+) -> List[str]:
+    """
+    Extract per-page Markdown from a TEXT_PDF using Docling.
+    Tables are rendered as Markdown. Images are suppressed (no placeholders).
+
+    Returns:
+        List[str]: per-page markdown (len == number of pages considered).
+    """
+    pdf_path = Path(pdf_path).expanduser().resolve()
+
+    converter = DocumentConverter()
+    result = converter.convert(str(pdf_path))
+    doc = result.document
+
+    # Token unlikely to appear in normal content
+    page_break = "\n\n<<<DOCLING_PAGE_BREAK>>>\n\n"
+
+    md = doc.export_to_markdown(
+        # Core: keep tables and paginate
+        enable_chart_tables=True,
+        compact_tables=True,
+        page_break_placeholder=page_break,
+        # “Light markdown”: reduce noise
+        include_annotations=False,
+        escape_html=True,
+        escape_underscores=True,
+        # Suppress image placeholders without needing ImageRefMode
+        image_placeholder="",
+    )
+
+    pages = [p.strip() for p in md.split(page_break)]
+    if max_pages is not None:
+        pages = pages[:max_pages]
+
+    return pages
+
+
 def page_has_enough_text(page_text: str, min_chars: int) -> bool:
     """Heuristic: decide whether pypdf extraction is 'good enough' for a page."""
     if not page_text:
@@ -319,9 +361,19 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     # 2) Extract pypdf text pages if needed
     pypdf_page_texts: Optional[List[str]] = None
     if effective_mode in ("pypdf", "auto"):
-        logger.info("Extracting text via pypdf...")
-        pypdf_page_texts = extract_text_pages_pypdf(pdf_path, max_pages=cfg.max_pages)
-        logger.info("pypdf extracted %d pages.", len(pypdf_page_texts))
+        # TODO see if there is a better way to plug docling here
+        if DOCKLING_ENABLED:
+            logger.info("Extracting text via Docling...")
+            pypdf_page_texts = extract_text_pages_docling(
+                pdf_path, max_pages=cfg.max_pages
+            )
+            logger.info("Docling extracted %d pages.", len(pypdf_page_texts))
+        else:
+            logger.info("Extracting text via pypdf...")
+            pypdf_page_texts = extract_text_pages_pypdf(
+                pdf_path, max_pages=cfg.max_pages
+            )
+            logger.info("pypdf extracted %d pages.", len(pypdf_page_texts))
 
     # 3) Render images if needed
     page_images: Optional[List[Image.Image]] = None

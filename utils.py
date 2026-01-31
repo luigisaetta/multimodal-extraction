@@ -72,3 +72,13 @@ def compute_stats(list_docs):
     perc_75_len = int(round(np.percentile(lengths, 75), 0))
 
     return mean_length, std_dev, perc_75_len
+
+
+def mask_secret(value: str, keep: int = 2) -> str:
+    """Mask secret values to avoid leaking in UI/logs."""
+    if value is None:
+        return ""
+    s = str(value)
+    if len(s) <= keep:
+        return "*" * len(s)
+    return s[:keep] + "*" * (len(s) - keep)

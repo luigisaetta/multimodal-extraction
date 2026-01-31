@@ -8,10 +8,13 @@ Description:
     Utility functions for DB operations
 """
 
+from typing import Any
 import oracledb
 
-from utils import get_console_logger
+from utils import get_console_logger, mask_secret
 
+from config import COLLECTION_NAME
+from config_private import VECTOR_DB_PWD, VECTOR_DB_USER, VECTOR_DSN, VECTOR_WALLET_DIR
 from config_private import CONNECT_ARGS
 
 logger = get_console_logger()
@@ -76,3 +79,26 @@ def print_table_comment(conn, table_name: str) -> None:
 
     print(f"Table comment for {table_name}:")
     print(comment if comment else "(no table comment)")
+
+
+def get_connection_params() -> dict[str, Any]:
+    """Get DB connection parameters with masked password."""
+    return {
+        "DB_USER": VECTOR_DB_USER,
+        "DB_PASSWORD": mask_secret(VECTOR_DB_PWD, keep=2),
+        "DB_DSN": VECTOR_DSN,
+        "DB_WALLET_DIR": VECTOR_WALLET_DIR or "(not set)",
+        "COLLECTION_NAME": COLLECTION_NAME,
+    }
+
+
+def check_db_connection() -> tuple[bool, str]:
+    """Check DB connection by running a simple SELECT."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM dual")
+                _ = cur.fetchone()
+        return True, "Connection OK (SELECT 1 FROM dual succeeded)."
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return False, f"{type(exc).__name__}: {exc}"

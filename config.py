@@ -43,7 +43,9 @@ EMBED_MODEL_ID = "cohere.embed-v4.0"
 REGION = "us-chicago-1"
 SERVICE_ENDPOINT = f"https://inference.generativeai.{REGION}.oci.oraclecloud.com"
 
+# docling and post processing cleanup
 DOCKLING_ENABLED = True
+ENABLE_CLEANUP = True
 
 # Chunking parameters, you can change from UI
 CHUNK_SIZE = 2048

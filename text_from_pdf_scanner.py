@@ -37,8 +37,9 @@ from langchain_core.messages import HumanMessage
 
 from oci_models import get_llm
 from prompts import build_ocr_text_prompt, build_figures_prompt
+from docling_post_processing import cleanup_docling_text_keep_captions
 from utils import get_console_logger
-from config import DOCKLING_ENABLED
+from config import DOCKLING_ENABLED, ENABLE_CLEANUP
 
 logger = get_console_logger()
 
@@ -230,6 +231,12 @@ def extract_text_pages_docling(
     pages = [p.strip() for p in md.split(page_break)]
     if max_pages is not None:
         pages = pages[:max_pages]
+
+    if ENABLE_CLEANUP:
+        # ✅ CLEANUP: remove short label noise but keep captions (Figure X / Table Y)
+        pages = [cleanup_docling_text_keep_captions(p) for p in pages]
+    else:
+        logger.info("Cleanup disabled...")
 
     return pages
 

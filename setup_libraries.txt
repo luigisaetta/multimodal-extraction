@@ -7,3 +7,5 @@ pip install streamlit
 pip install streamlit_pdf_viewer
 pip install pypdfium2
 pip install pypdf
+pip install docling
+

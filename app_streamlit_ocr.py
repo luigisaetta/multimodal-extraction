@@ -137,6 +137,8 @@ def init_session_state() -> None:
         "uploaded_file_key": None,
         "db_check_ok": None,
         "db_check_msg": None,
+        "collection_rows": None,
+        "collection_load_msg": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -296,6 +298,28 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             check_ok, check_msg = check_db_connection()
             st.session_state["db_check_ok"] = check_ok
             st.session_state["db_check_msg"] = check_msg
+
+            # Reset previous loaded data each time we re-check
+            st.session_state["collection_rows"] = None
+            st.session_state["collection_load_msg"] = None
+
+            # If DB ok, load documents list now (only on button press)
+            if check_ok:
+                try:
+                    with get_db_connection() as conn:
+                        rows_loaded = OracleVSAdmin.list_documents_with_chunk_counts(
+                            conn,
+                            COLLECTION_NAME,
+                        )
+                    st.session_state["collection_rows"] = rows_loaded
+                    st.session_state["collection_load_msg"] = (
+                        f"Loaded {len(rows_loaded)} documents from collection."
+                    )
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    st.session_state["collection_rows"] = []
+                    st.session_state["collection_load_msg"] = (
+                        f"Load failed: {type(exc).__name__}: {exc}"
+                    )
 
         if st.session_state["db_check_ok"] is True:
             st.success(st.session_state["db_check_msg"])
@@ -561,17 +585,24 @@ else:
     with right:
         st.subheader(f"Documents in collection: {COLLECTION_NAME}")
 
-        try:
-            with get_db_connection() as conn:
-                collection_rows = OracleVSAdmin.list_documents_with_chunk_counts(
-                    conn,
-                    COLLECTION_NAME,
-                )
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            st.error(
-                f"Failed to read documents from collection: {type(exc).__name__}: {exc}"
+        db_ok = st.session_state.get("db_check_ok", None)
+        if db_ok is not True:
+            st.info("Push **Check DB connection** in the sidebar to load documents.")
+            st.stop()
+
+        load_msg = st.session_state.get("collection_load_msg")
+        if load_msg:
+            # If load_msg contains "failed" you may want st.error; keep simple:
+            st.caption(load_msg)
+
+        collection_rows = st.session_state.get("collection_rows")
+
+        if collection_rows is None:
+            st.info(
+                "Connection OK, but documents not loaded yet. "
+                "Push again **Check DB connection** to load."
             )
-            collection_rows = []
+            st.stop()
 
         if not collection_rows:
             st.warning("No documents found in collection.")

@@ -462,21 +462,41 @@ if nav_page == "OCR & Load":
             if last_chunk_error:
                 st.error(last_chunk_error)
 
-    with right:
-        st.subheader("Output text")
-        output_text = st.session_state.get("output_text")
-        if output_text:
-            st.text_area("Extracted text", output_text, height=650)
-            out_name = Path(st.session_state.get("out_path") or "output.txt").name
-            st.download_button(
-                "Download output.txt",
-                data=output_text.encode("utf-8"),
-                file_name=out_name,
-                mime="text/plain",
-                use_container_width=True,
-            )
-        else:
-            st.caption("Run OCR to see extracted text and figures description here.")
+        with right:
+            # 01/02/2026: you can now chhose between markdoen and raw text view
+            st.subheader("Output text")
+            output_text = st.session_state.get("output_text")
+
+            if output_text:
+                render_markdown = st.checkbox(
+                    "Render Markdown",
+                    value=False,
+                    help=(
+                        "Render markdown formatting (tables/headings). "
+                        "Use 'Raw text' to copy the original content."
+                    ),
+                )
+
+                if render_markdown:
+                    st.markdown(output_text)
+
+                    with st.expander("Raw text (copy/paste)", expanded=False):
+                        st.text_area("Raw", output_text, height=260)
+                else:
+                    st.text_area("Extracted text", output_text, height=650)
+
+                out_name = Path(st.session_state.get("out_path") or "output.txt").name
+                st.download_button(
+                    "Download output.txt",
+                    data=output_text.encode("utf-8"),
+                    file_name=out_name,
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            else:
+                st.caption(
+                    "Run OCR to see extracted text and figures description here."
+                )
 
     # ----------------------------
     # Run OCR pipeline

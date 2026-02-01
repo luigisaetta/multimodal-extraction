@@ -35,7 +35,7 @@ def _safe_ident(name: str) -> str:
     return n
 
 
-class OracleVS4DBLoading(OracleVS):
+class OracleVSAdmin(OracleVS):
     """
     This class extends OracleVS and has been defined to add utility methods
     """

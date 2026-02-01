@@ -45,7 +45,7 @@ from ocr_output_chunking_utils import (
     chunks_to_langchain_documents,
     ocr_output_text_to_chunks,
 )
-from oraclevs_4_db_loading import OracleVS4DBLoading
+from oraclevs_admin import OracleVSAdmin
 from text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
 from db_utils import get_db_connection, get_connection_params, check_db_connection
 from utils import get_console_logger
@@ -124,7 +124,7 @@ def oracle_vector_store_load(langchain_docs: list[Any]) -> None:
     with get_db_connection() as conn:
         logger.info("Loading chunks in DB...")
 
-        oracle_vs = OracleVS4DBLoading(
+        oracle_vs = OracleVSAdmin(
             client=conn,
             table_name=COLLECTION_NAME,
             embedding_function=get_embedding_model(),
@@ -165,7 +165,7 @@ def list_collection_documents_real(collection_name: str) -> list[dict[str, Any]]
         safe_table_name = collection_name.strip().upper()
 
         # Validate identifier (raises if invalid)
-        _ = OracleVS4DBLoading.list_documents_in_collection(conn, safe_table_name)
+        _ = OracleVSAdmin.list_documents_in_collection(conn, safe_table_name)
 
         sql = f"""
             SELECT

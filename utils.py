@@ -12,6 +12,7 @@ Description:
 
 import logging
 import os
+from typing import Any
 import numpy as np
 
 
@@ -82,3 +83,17 @@ def mask_secret(value: str, keep: int = 2) -> str:
     if len(s) <= keep:
         return "*" * len(s)
     return s[:keep] + "*" * (len(s) - keep)
+
+
+# only for debugging
+def print_chunks_loaded(langchain_docs: list[Any]) -> None:
+    """Debug: print loaded chunks."""
+    for idx, doc in enumerate(langchain_docs):
+        print("----------------------------")
+        print("Chunk n. ", idx + 1)
+        print("")
+        print(f"Doc page_content:\n{doc.page_content}")
+        print("")
+        print(f"Doc metadata:\n{doc.metadata}")
+        print("----------------------------")
+        print("")

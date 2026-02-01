@@ -15,6 +15,23 @@ AUTH = "API_KEY"
 
 # LLM configs
 # MODEL_ID defined from the UI selection
+
+# list  of models available to the app
+# you can choose the one you prefer in the app UI
+
+# ---- Configure your available models here ----
+# check that you have the right to use the models you list here
+# license, availability in your tenant, etc.
+
+MODEL_IDS = [
+    "openai.gpt-5.2",
+    "meta.llama-4-maverick-17b-128e-instruct-fp8",
+    "google.gemini-2.5-pro",
+    "xai.grok-4-1-fast-non-reasoning",
+    "cohere.command-a-vision v1.0",
+    # add others you support via get_llm(...)
+]
+
 DEFAULT_MODEL_ID = "google.gemini-2.5-pro"
 TEMPERATURE = 0.0
 MAX_TOKENS = 8000

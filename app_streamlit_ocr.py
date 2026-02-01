@@ -38,7 +38,7 @@ import streamlit as st
 from streamlit_pdf_viewer import pdf_viewer
 
 from classify_pdf import ClassifyConfig, classify_pdf
-from config import COLLECTION_NAME, DEBUG
+from config import COLLECTION_NAME, MODEL_IDS, DEBUG
 
 from oci_models import get_embedding_model
 from ocr_output_chunking_utils import (
@@ -48,21 +48,9 @@ from ocr_output_chunking_utils import (
 from oraclevs_admin import OracleVSAdmin
 from text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
 from db_utils import get_db_connection, get_connection_params, check_db_connection
-from utils import get_console_logger
+from utils import get_console_logger, print_chunks_loaded
 
 logger = get_console_logger()
-
-# ---- Configure your available models here ----
-# check that you have the right to use the models you list here
-# license, availability in your tenant, etc.
-MODEL_IDS = [
-    "openai.gpt-5.2",
-    "meta.llama-4-maverick-17b-128e-instruct-fp8",
-    "google.gemini-2.5-pro",
-    "xai.grok-4-1-fast-non-reasoning",
-    "cohere.command-a-vision v1.0",
-    # add others you support via get_llm(...)
-]
 
 
 # ----------------------------
@@ -95,19 +83,6 @@ def classify_uploaded_pdf(tmp_pdf_path_str: str) -> tuple[str, str]:
     )
     detected_label, detected_reason = classify_pdf(Path(tmp_pdf_path_str), classify_cfg)
     return detected_label, (detected_reason or "")
-
-
-def print_chunks_loaded(langchain_docs: list[Any]) -> None:
-    """Debug: print loaded chunks."""
-    for idx, doc in enumerate(langchain_docs):
-        print("----------------------------")
-        print("Chunk n. ", idx + 1)
-        print("")
-        print(f"Doc page_content:\n{doc.page_content}")
-        print("")
-        print(f"Doc metadata:\n{doc.metadata}")
-        print("----------------------------")
-        print("")
 
 
 def oracle_vector_store_load(langchain_docs: list[Any]) -> None:
@@ -164,8 +139,7 @@ def list_collection_documents_real(collection_name: str) -> list[dict[str, Any]]
     with get_db_connection() as conn:
         safe_table_name = collection_name.strip().upper()
 
-        # Validate identifier (raises if invalid)
-        _ = OracleVSAdmin.list_documents_in_collection(conn, safe_table_name)
+        # removed first query. faster
 
         sql = f"""
             SELECT

@@ -1,12 +1,15 @@
 """
 Author: Luigi Saetta
-Date last modified: 2026-01-14
+Date last modified: 2026-02-01
 Python Version: 3.11
 License: MIT
 
 Description:
     Extension of OracleVS class to add utility methods for database loading
     and management specific to Oracle Vector Search.
+
+    Iportant: this class assumes that in the metadata there is a source field
+    identifying the document the chunk belongs to.
 """
 
 import re

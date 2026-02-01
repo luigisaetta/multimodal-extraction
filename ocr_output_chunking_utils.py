@@ -12,12 +12,14 @@ This module is intentionally NOT based on Docling:
 
 It provides:
 - Parsing OCR output into per-page blocks
-- Chunking each page with LangChain's RecursiveCharacterTextSplitter
 - Producing LangChain Document objects with clean metadata
 - Optionally prepending a stable header to each chunk:
     ---
     source_file: <pdf file name>
     ---
+
+IMPORTANT (current behavior):
+- One chunk == one page (no intra-page splitting)
 
 Expected OCR output structure (simplified):
     ... header ...
@@ -95,7 +97,10 @@ def chunk_text(text: str, max_chunk_size: int, overlap: int = 0) -> List[str]:
     """
     Chunk text into approximate character-sized parts.
 
-    Uses LangChain's RecursiveCharacterTextSplitter to generate chunks.
+    NOTE:
+        This function is currently NOT used by the default strategy
+        (one chunk == one page), but it is kept for backwards compatibility
+        and potential future hybrid strategies (e.g., split very long pages).
 
     Args:
         text: Input text to chunk.
@@ -198,32 +203,39 @@ def make_chunk_header(source_name: str) -> str:
 def ocr_output_text_to_chunks(
     full_text: str,
     source_name: str,
-    max_chunk_size: int = 1500,
-    overlap: int = 100,
+    max_chunk_size: int = 1500,  # kept for interface compatibility
+    overlap: int = 100,  # kept for interface compatibility
     add_header: bool = True,
 ) -> List[OcrChunk]:
     """
     Convert OCR output text into a list of OcrChunk objects.
 
-    Strategy:
+    Strategy (current):
     - Parse OCR output into per-page blocks.
-    - Chunk each page independently (keeps page_label meaningful).
+    - Create exactly ONE chunk per page (no intra-page splitting).
     - Attach metadata: {source, page_label, extraction=ocr}.
     - Optionally prepend a stable header containing ONLY the source file name:
         ---
         source_file: <source_name>
         ---
 
+    Notes:
+    - max_chunk_size and overlap are kept for backward compatibility
+      but are not used in the one-chunk-per-page strategy.
+
     Args:
         full_text: Full OCR output text (e.g., content of output.txt).
         source_name: A short source name (usually the original PDF filename).
-        max_chunk_size: Chunk size in characters.
-        overlap: Chunk overlap in characters.
+        max_chunk_size: Unused in this strategy (kept for compatibility).
+        overlap: Unused in this strategy (kept for compatibility).
         add_header: If True, prepends the header block to each chunk.
 
     Returns:
-        List of OcrChunk objects.
+        List of OcrChunk objects (one per non-empty page).
     """
+    _ = max_chunk_size
+    _ = overlap
+
     pages = parse_pages_from_ocr_output(full_text)
     chunks: List[OcrChunk] = []
     header = make_chunk_header(source_name) if add_header else ""
@@ -231,27 +243,23 @@ def ocr_output_text_to_chunks(
     for page_num, page_text in pages:
         page_label = str(page_num)
 
-        # Keep page-level chunking stable even if page is placeholder/empty
-        parts = chunk_text(page_text, max_chunk_size=max_chunk_size, overlap=overlap)
+        txt = (page_text or "").strip()
+        if not txt:
+            continue
 
-        for part in parts:
-            txt = part.strip()
-            if not txt:
-                continue
+        if add_header:
+            txt = header + txt
 
-            if add_header:
-                txt = header + txt
-
-            md = build_metadata(source_name, page_label)
-            chunks.append(
-                OcrChunk(
-                    text=txt,
-                    source_name=source_name,
-                    page_label=page_label,
-                    chunk_index=len(chunks),
-                    metadata=md,
-                )
+        md = build_metadata(source_name, page_label)
+        chunks.append(
+            OcrChunk(
+                text=txt,
+                source_name=source_name,
+                page_label=page_label,
+                chunk_index=len(chunks),
+                metadata=md,
             )
+        )
 
     return chunks
 
@@ -272,8 +280,8 @@ def ocr_output_file_to_chunks(
         source_name: Optional source name; if None, tries to infer it:
             - first tries to parse 'SOURCE PDF:' line and use its basename
             - otherwise uses the output file name
-        max_chunk_size: Chunk size in characters.
-        overlap: Chunk overlap in characters.
+        max_chunk_size: Kept for compatibility (unused in one-page strategy).
+        overlap: Kept for compatibility (unused in one-page strategy).
         add_header: If True, prepends the header block to each chunk.
         encoding: File encoding.
 

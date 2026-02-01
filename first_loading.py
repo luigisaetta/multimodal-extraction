@@ -155,21 +155,24 @@ def main() -> None:
         help="Multimodal model id used by the extraction pipeline (for scanned PDFs).",
     )
     parser.add_argument(
-        "--describe-figures",
-        action="store_true",
-        help="Append [FIGURES] section per page (second multimodal call).",
+        "--no-describe-figures",
+        action="store_false",
+        dest="describe_figures",
+        help="Disable figure/diagram description (multimodal call).",
     )
+
     parser.add_argument(
         "--max-pages",
         type=int,
         default=0,
         help="Max pages to process per PDF (0 = all).",
     )
+    parser.set_defaults(describe_figures=True)
 
     args = parser.parse_args()
 
     new_collection_name = _assert_safe_identifier(args.new_collection_name)
-    documents_dir = Path(args.books_dir).expanduser().resolve()
+    documents_dir = Path(args.documents_dir).expanduser().resolve()
 
     if not documents_dir.exists() or not documents_dir.is_dir():
         raise SystemExit(f"Not a directory: {documents_dir}")

@@ -1,4 +1,9 @@
 """
+Author: Luigi Saetta
+Date last modified: 2026-01-30
+Python Version: 3.11
+License: MIT
+
 Utilities for chunking OCR output produced by the scanned-PDF pipeline.
 
 This module is intentionally NOT based on Docling:
@@ -28,9 +33,6 @@ Expected OCR output structure (simplified):
 
     ===================== END TEXT =====================
     TOTAL PAGES: <n>
-
-Author: Luigi Saetta
-Python: 3.11+
 """
 
 from __future__ import annotations

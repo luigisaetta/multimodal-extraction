@@ -31,6 +31,9 @@ def pil_to_data_url(
     jpeg_quality: int = 85,
     png_compress_level: int = 6,
 ) -> str:
+    """
+    Convert a PIL image to a base64 data URL, resizing if needed.
+    """
     fmt = fmt.upper()
 
     if fmt in ("JPEG", "JPG") and img.mode != "RGB":
@@ -63,6 +66,9 @@ def stream_ocr(
     max_side: int = 1600,
     debug_meta: bool = False,
 ):
+    """
+    Stream OCR from Gemini on a single image.
+    """
     img = Image.open(image_path)
     data_url = pil_to_data_url(img, max_side=max_side, fmt="PNG")
     prompt_text = build_ocr_text_prompt(extra_prompt=extra_prompt)
@@ -123,6 +129,9 @@ def stream_ocr(
 
 
 def main():
+    """
+    Main
+    """
     parser = argparse.ArgumentParser(
         description="Debug Gemini OCR on a single image (streaming, clean)"
     )

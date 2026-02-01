@@ -1,4 +1,9 @@
 """
+Author: Luigi Saetta
+Date last modified: 2026-01-30
+Python Version: 3.11
+License: MIT
+
 Streamlit UI for scanned PDF -> OCR (multimodal LLM) -> single text output
 
 Enhancements:
@@ -21,9 +26,6 @@ DB / Collection Inspector page:
 Fix:
 - When a NEW PDF is uploaded, clear previous OCR output and chunk/load status.
 
-Author: Luigi Saetta
-Python: 3.11+
-License: MIT
 """
 
 from __future__ import annotations

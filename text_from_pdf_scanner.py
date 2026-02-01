@@ -1,5 +1,9 @@
 # text_from_pdf_scanner.py
 """
+Author: Luigi Saetta
+Python: 3.11+
+License: MIT
+
 Scanned / Text PDF -> (optional) page images -> multimodal LLM -> text (+ optional figures)
 
 Features:
@@ -12,10 +16,6 @@ Features:
 - OPTIONAL: describe figures/diagrams (append at end of each page)
 - Single output text file with per-page footer
 - Prompts for multimodal LLM in prompts.py
-
-Author: Luigi Saetta
-Python: 3.11+
-License: MIT
 """
 
 from __future__ import annotations
@@ -369,6 +369,7 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
             )
             logger.info("Docling extracted %d pages.", len(pypdf_page_texts))
         else:
+            # use pypdf
             logger.info("Extracting text via pypdf...")
             pypdf_page_texts = extract_text_pages_pypdf(
                 pdf_path, max_pages=cfg.max_pages
@@ -439,7 +440,7 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
         page_text = ""
 
         if effective_mode == "pypdf":
-            # Always use pypdf for text
+            # use Docling or pypdf for text
             assert pypdf_page_texts is not None
             page_text = pypdf_page_texts[idx - 1]
 
@@ -457,7 +458,7 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
             )
 
         else:
-            # auto: try pypdf, fallback to VLM if page looks empty/weak
+            # auto: try Docling/pypdf, fallback to VLM if page looks empty/weak
             assert pypdf_page_texts is not None
             candidate_text = pypdf_page_texts[idx - 1]
             if page_has_enough_text(candidate_text, cfg.min_text_chars_page):
@@ -599,6 +600,7 @@ def main() -> None:
         min_text_chars_page=int(args.min_text_chars_page),
     )
 
+    # from command lie you can run the entire pipeline
     run_ocr_pipeline(Path(args.pdf), cfg)
 
 

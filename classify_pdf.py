@@ -1,4 +1,9 @@
 """
+Author: Luigi Saetta
+Date last modified: 2026-01-30
+Python Version: 3.11
+License: MIT
+
 Classify PDFs in a directory as:
 - TEXT_PDF (extractable text)
 - SCANNED_PDF (image-only / scanned)
@@ -12,10 +17,6 @@ Decision policy (robust heuristic):
   2) presence of image XObjects in page resources
 - Minimal, non-noisy output: one line per PDF (unless you keep the "mixed -> scanned fallback",
   which intentionally prints MIXED/UNKNOWN then SCANNED_PDF for safety).
-
-Python 3.11+
-Dependencies: pypdf (recommended) or PyPDF2
-  pip install pypdf
 """
 
 from __future__ import annotations
@@ -74,7 +75,7 @@ def _safe_extract_text(reader: PdfReader, page_index: int) -> str:
         txt = page.extract_text() or ""
         # normalize whitespace a bit (keeps signal stable)
         return " ".join(txt.split())
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return ""
 
 
@@ -101,11 +102,23 @@ def _page_has_images(reader: PdfReader, page_index: int) -> bool:
                 subtype = obj.get("/Subtype")
                 if subtype == "/Image":
                     return True
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 continue
+
         return False
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         return False
+
+
+def _build_reason(total_text_chars: int, text_pages: int, image_ratio: float) -> str:
+    """
+    Build a compact, stable reason string (pylint line-length friendly).
+    """
+    return (
+        f"text_chars={total_text_chars}, "
+        f"text_pages={text_pages}, "
+        f"image_ratio={image_ratio:.2f}"
+    )
 
 
 def classify_pdf(pdf_path: Path, cfg: ClassifyConfig) -> Tuple[str, Optional[str]]:
@@ -129,54 +142,43 @@ def classify_pdf(pdf_path: Path, cfg: ClassifyConfig) -> Tuple[str, Optional[str
         text_pages = 0
         image_pages = 0
 
-        for i in sampled_indices:
-            txt = _safe_extract_text(reader, i)
+        for page_index in sampled_indices:
+            txt = _safe_extract_text(reader, page_index)
             tlen = len(txt)
             total_text_chars += tlen
             if tlen >= cfg.min_text_chars_page:
                 text_pages += 1
 
-            if _page_has_images(reader, i):
+            if _page_has_images(reader, page_index):
                 image_pages += 1
 
         image_ratio = image_pages / max(1, len(sampled_indices))
+        reason = _build_reason(total_text_chars, text_pages, image_ratio)
 
         # --- KEY FIX: strong text signal wins ---
         # Avoid misclassifying "text PDFs with logos/watermarks on every page" as MIXED.
         if total_text_chars >= cfg.strong_text_chars:
-            return (
-                "TEXT_PDF",
-                f"text_chars={total_text_chars}, text_pages={text_pages}, image_ratio={image_ratio:.2f}",
-            )
+            return "TEXT_PDF", reason
 
         has_text = total_text_chars >= cfg.min_text_chars_doc or text_pages > 0
         has_images = image_pages > 0
 
         if has_text and (
-            not has_images or image_ratio < cfg.scanned_if_image_pages_ratio_ge
+            (not has_images) or image_ratio < cfg.scanned_if_image_pages_ratio_ge
         ):
-            return (
-                "TEXT_PDF",
-                f"text_chars={total_text_chars}, text_pages={text_pages}, image_ratio={image_ratio:.2f}",
-            )
+            return "TEXT_PDF", reason
 
         if (
             (not has_text)
             and has_images
-            and image_ratio >= cfg.scanned_if_image_pages_ratio_ge
+            and (image_ratio >= cfg.scanned_if_image_pages_ratio_ge)
         ):
-            return (
-                "SCANNED_PDF",
-                f"text_chars={total_text_chars}, text_pages={text_pages}, image_ratio={image_ratio:.2f}",
-            )
+            return "SCANNED_PDF", reason
 
-        return (
-            "MIXED_OR_UNKNOWN",
-            f"text_chars={total_text_chars}, text_pages={text_pages}, image_ratio={image_ratio:.2f}",
-        )
+        return "MIXED_OR_UNKNOWN", reason
 
-    except Exception as e:
-        return "MIXED_OR_UNKNOWN", f"read_error={type(e).__name__}"
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return "MIXED_OR_UNKNOWN", f"read_error={type(exc).__name__}"
 
 
 # -----------------------------
@@ -208,13 +210,17 @@ def main() -> None:
         "--scanned-image-ratio",
         type=float,
         default=0.6,
-        help="If >= this ratio of sampled pages have images and text is low -> SCANNED_PDF",
+        help=(
+            "If >= this ratio of sampled pages have images and text is low -> SCANNED_PDF"
+        ),
     )
     ap.add_argument(
         "--strong-text-chars",
         type=int,
         default=5000,
-        help="If extracted text chars >= this -> TEXT_PDF (even if image_ratio is high)",
+        help=(
+            "If extracted text chars >= this -> TEXT_PDF (even if image_ratio is high)"
+        ),
     )
     ap.add_argument(
         "--verbose",

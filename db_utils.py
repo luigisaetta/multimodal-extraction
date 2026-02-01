@@ -99,6 +99,6 @@ def check_db_connection() -> tuple[bool, str]:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 FROM dual")
                 _ = cur.fetchone()
-        return True, "Connection OK (SELECT 1 FROM dual succeeded)."
+        return True, "Connection OK."
     except Exception as exc:  # pylint: disable=broad-exception-caught
         return False, f"{type(exc).__name__}: {exc}"

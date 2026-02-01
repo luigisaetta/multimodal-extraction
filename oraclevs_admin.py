@@ -5,114 +5,148 @@ Python Version: 3.11
 License: MIT
 
 Description:
-    Extension of OracleVS class to add utility methods for database loading
-    and management specific to Oracle Vector Search.
+    Extension of OracleVS class to add utility methods for administration and
+    management specific to Oracle Vector Search collections.
 
-    Iportant: this class assumes that in the metadata there is a source field
-    identifying the document the chunk belongs to.
+Important:
+    This class assumes that METADATA is a JSON column containing a '$.source'
+    field identifying the document each chunk belongs to.
 """
+
+from __future__ import annotations
 
 import re
 from collections import Counter
+from typing import Any, Dict, List, Sequence
+
 from oracledb import Connection, DB_TYPE_VECTOR
 
-# moved to Langchain 1.x compatibility
+# moved to LangChain 1.x compatibility
 from langchain_oracledb import OracleVS
 
-from utils import get_console_logger
 from config import DEBUG
+from utils import get_console_logger
 
 logger = get_console_logger()
 
-# to avoid SQL injection
+# to avoid SQL injection on identifiers (table names etc.)
 _VALID_IDENT = re.compile(r"^[A-Z][A-Z0-9_$#]*$")
 
 
 def _safe_ident(name: str) -> str:
     """
-    Validate and return a safe Oracle identifier
+    Validate and return a safe Oracle identifier (uppercased).
+
+    Raises:
+        ValueError: if name contains invalid characters.
     """
-    n = name.strip().upper()
-    if not _VALID_IDENT.fullmatch(n):
+    ident = name.strip().upper()
+    if not _VALID_IDENT.fullmatch(ident):
         raise ValueError(f"Invalid Oracle identifier: {name!r}")
-    return n
+    return ident
 
 
 class OracleVSAdmin(OracleVS):
     """
-    This class extends OracleVS and has been defined to add utility methods
+    Admin utilities for Oracle Vector Store collections.
     """
 
     @classmethod
-    def list_collections(cls, connection: Connection):
+    def list_collections(cls, connection: Connection) -> List[str]:
         """
-        return a list of all collections (tables) with a type vector
-        in the schema in use
+        Return a list of all collections (tables) that contain VECTOR columns
+        in the current schema.
         """
-
         query = """
-                SELECT DISTINCT table_name
-                FROM user_tab_columns
-                WHERE data_type = 'VECTOR'
-                ORDER by table_name ASC
-                """
+            SELECT DISTINCT table_name
+            FROM user_tab_columns
+            WHERE data_type = 'VECTOR'
+            ORDER BY table_name ASC
+        """
 
         with connection.cursor() as cursor:
             cursor.execute(query)
-
             rows = cursor.fetchall()
 
-            list_collections = []
-            for row in rows:
-                list_collections.append(row[0])
-
-        return list_collections
+        return [row[0] for row in rows]
 
     @classmethod
-    def list_documents_in_collection(cls, connection: Connection, collection_name: str):
-        """ "
-        get the list of documents in the collection
-        taken from metadata
-        expect metadata contains source
+    def list_documents_in_collection(
+        cls, connection: Connection, collection_name: str
+    ) -> List[str]:
         """
-        collection_name = _safe_ident(collection_name)
+        Return the list of distinct document sources (METADATA.source) found
+        in the specified collection.
+        """
+        safe_name = _safe_ident(collection_name)
 
         query = f"""
-                SELECT DISTINCT json_value(METADATA, '$.source') AS books
-                FROM {collection_name}
-                ORDER by books ASC
-                """
+            SELECT DISTINCT json_value(METADATA, '$.source') AS source
+            FROM {safe_name}
+            WHERE json_value(METADATA, '$.source') IS NOT NULL
+            ORDER BY source ASC
+        """
+
         with connection.cursor() as cursor:
             cursor.execute(query)
-
             rows = cursor.fetchall()
 
-            list_books = []
-            for row in rows:
-                list_books.append(row[0])
+        return [row[0] for row in rows if row and row[0] is not None]
 
-        return list_books
+    @classmethod
+    def list_documents_with_chunk_counts(
+        cls, connection: Connection, collection_name: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Return list of {"document": <source>, "n_chunks": <count>} for the given collection.
+
+        This is the "single GROUP BY" query you used in the Streamlit app, moved here
+        to avoid duplication.
+
+        Notes:
+          - expects a METADATA JSON column with '$.source'
+        """
+        safe_name = _safe_ident(collection_name)
+
+        sql = f"""
+            SELECT
+                json_value(METADATA, '$.source') AS document,
+                COUNT(*) AS n_chunks
+            FROM {safe_name}
+            WHERE json_value(METADATA, '$.source') IS NOT NULL
+            GROUP BY json_value(METADATA, '$.source')
+            ORDER BY document ASC
+        """
+
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            # row[0] is document/source, row[1] is count
+            out.append({"document": row[0], "n_chunks": int(row[1])})
+        return out
 
     @classmethod
     def analyze_collection(cls, connection: Connection, collection_name: str) -> str:
         """
-        analyze completely a collection and return a text containing a short report
+        Analyze a collection and return a short report including:
+          - total rows (chunks)
+          - vector dimensions distribution
+          - vector formats distribution
         """
-        collection_name = _safe_ident(collection_name)
-
-        sql = f"SELECT * FROM {collection_name}"
+        safe_name = _safe_ident(collection_name)
+        sql = f"SELECT * FROM {safe_name}"
 
         with connection.cursor() as cur:
             cur.execute(sql)
-
             descs = cur.description  # column metadata
 
             records = 0
-            dim_counter = Counter()
-            format_counter = Counter()
-            # here we analyse the vector columns
-            # we compute the number of records
-            # and the number of different dimensions and formats
+            dim_counter: Counter[int] = Counter()
+            format_counter: Counter[Any] = Counter()
+
             for row in cur:
                 records += 1
                 for idx, _ in enumerate(row):
@@ -123,48 +157,48 @@ class OracleVSAdmin(OracleVS):
                         dim_counter[dims] += 1
                         format_counter[fmt] += 1
 
-        # output
-        report = f"Analyzed collection: {collection_name}\n"
+        report = f"Analyzed collection: {safe_name}\n"
         report += f"    Total chunks fetched: {records}\n"
         report += f"    Vector dimensions seen (count): {dict(dim_counter)}\n"
         report += f"    Vector formats seen (count): {dict(format_counter)}\n"
-
         return report
 
     @classmethod
     def delete_documents(
-        cls, connection: Connection, collection_name: str, doc_names: list
-    ):
+        cls, connection: Connection, collection_name: str, doc_names: Sequence[str]
+    ) -> None:
         """
-        doc_names: list of names of docs to drop
+        Delete all chunks whose METADATA.source is in doc_names.
+
+        Args:
+            connection: open Oracle connection
+            collection_name: table name
+            doc_names: iterable of source names to delete
         """
-        for doc_name in doc_names:
-            sql = f"""
-                  DELETE FROM {collection_name}
-                  WHERE json_value(METADATA, '$.source') = :doc
-                  """
+        safe_name = _safe_ident(collection_name)
 
-            if DEBUG:
-                logger.info("Drop %s", doc_name)
-                logger.info(sql)
+        sql = f"""
+            DELETE FROM {safe_name}
+            WHERE json_value(METADATA, '$.source') = :doc
+        """
 
-            cur = connection.cursor()
-
-            cur.execute(sql, [doc_name])
-
-            cur.close()
+        with connection.cursor() as cur:
+            for doc_name in doc_names:
+                if DEBUG:
+                    logger.info("Dropping document source: %s", doc_name)
+                cur.execute(sql, [doc_name])
 
         connection.commit()
 
     @classmethod
-    def drop_collection(cls, connection: Connection, collection_name: str):
+    def drop_collection(cls, connection: Connection, collection_name: str) -> None:
         """
-        drop a collection
+        Drop a collection table.
         """
-        collection_name = _safe_ident(collection_name)
+        safe_name = _safe_ident(collection_name)
+        sql = f"DROP TABLE {safe_name}"
 
-        sql = f"DROP TABLE {collection_name}"
+        with connection.cursor() as cur:
+            cur.execute(sql)
 
-        cur = connection.cursor()
-
-        cur.execute(sql)
+        connection.commit()

@@ -96,11 +96,11 @@ def oracle_vector_store_load(langchain_docs: list[Any]) -> None:
         logger.info("oracle_vector_store_load called with 0 chunks.")
         return
 
-    with get_db_connection() as conn:
+    with get_db_connection() as _conn:
         logger.info("Loading chunks in DB...")
 
         oracle_vs = OracleVSAdmin(
-            client=conn,
+            client=_conn,
             table_name=COLLECTION_NAME,
             embedding_function=get_embedding_model(),
         )
@@ -123,39 +123,6 @@ def reset_outputs_for_new_upload() -> None:
     st.session_state["out_path"] = None
     st.session_state["chunks_count"] = None
     st.session_state["last_chunk_error"] = None
-
-
-def list_collection_documents_real(collection_name: str) -> list[dict[str, Any]]:
-    """
-    Return list of {"document": <source>, "n_chunks": <count>} for the given collection.
-
-    Implementation:
-      - validate identifier by calling OracleVS4DBLoading.list_documents_in_collection()
-      - do a single GROUP BY query using METADATA.source
-
-    Notes:
-      - expects the table has a column named METADATA containing JSON with $.source
-    """
-    with get_db_connection() as conn:
-        safe_table_name = collection_name.strip().upper()
-
-        # removed first query. faster
-
-        sql = f"""
-            SELECT
-                json_value(METADATA, '$.source') AS document,
-                COUNT(*) AS n_chunks
-            FROM {safe_table_name}
-            WHERE json_value(METADATA, '$.source') IS NOT NULL
-            GROUP BY json_value(METADATA, '$.source')
-            ORDER BY document ASC
-        """
-
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            fetched_rows = cur.fetchall()
-
-    return [{"document": r[0], "n_chunks": int(r[1])} for r in fetched_rows]
 
 
 def init_session_state() -> None:
@@ -595,7 +562,11 @@ else:
         st.subheader(f"Documents in collection: {COLLECTION_NAME}")
 
         try:
-            collection_rows = list_collection_documents_real(COLLECTION_NAME)
+            with get_db_connection() as conn:
+                collection_rows = OracleVSAdmin.list_documents_with_chunk_counts(
+                    conn,
+                    COLLECTION_NAME,
+                )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             st.error(
                 f"Failed to read documents from collection: {type(exc).__name__}: {exc}"

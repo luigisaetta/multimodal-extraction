@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage
 #
 REGION = "eu-frankfurt-1"
 SERVICE_ENDPOINT = f"https://inference.generativeai.{REGION}.oci.oraclecloud.com"
-COMPARTMENT_ID = "ocid1.compartment.oc1..aaaaaaaaushuwb2evpuf7rcpl4r7ugmqoe7ekmaiik3ra3m7gec3d234eknq"
+COMPARTMENT_ID = "your_ocid"
 
 
 def pil_to_data_url(img: Image.Image, max_side: int = 1600, quality: int = 85) -> str:

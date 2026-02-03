@@ -20,6 +20,7 @@ from config import (
     SERVICE_ENDPOINT,
     TEMPERATURE,
     MAX_TOKENS,
+    MAX_OUTPUT_TOKENS,
 )
 from config_private import COMPARTMENT_ID
 from utils import get_console_logger
@@ -66,13 +67,14 @@ def get_llm(model_id=DEFAULT_MODEL_ID, temperature=TEMPERATURE, max_tokens=MAX_T
             "temperature": temperature,
             "max_completion_tokens": max_tokens,
         }
-    elif provider == "gemini":
+    elif provider == "google":
         # fix for Gemini truncating outputs if using "max_tokens"
         _model_kwargs = {
             "temperature": temperature,
-            "max_output_tokens": max_tokens,
+            "max_tokens": MAX_OUTPUT_TOKENS,
         }
     else:
+        # Cohere
         _model_kwargs = {"temperature": temperature, "max_tokens": max_tokens}
 
     logger.info("Using endpoint: %s...", SERVICE_ENDPOINT)

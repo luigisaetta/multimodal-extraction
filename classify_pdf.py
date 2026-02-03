@@ -38,7 +38,7 @@ def process_text_pdf(pdf_path: Path) -> None:
     For now empty processor that just logs the text PDF.
     """
     logging.info("TEXT_PDF     | %s", pdf_path)
-    raise NotImplementedError("Feature not implemented yet")
+    # raise NotImplementedError("Feature not implemented yet")
 
 
 def process_scanned_pdf(pdf_path: Path) -> None:
@@ -46,7 +46,7 @@ def process_scanned_pdf(pdf_path: Path) -> None:
     For now empty processor that just logs the scanned PDF.
     """
     logging.info("SCANNED_PDF  | %s", pdf_path)
-    raise NotImplementedError("Feature not implemented yet")
+    # raise NotImplementedError("Feature not implemented yet")
 
 
 # -----------------------------

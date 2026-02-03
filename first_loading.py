@@ -21,6 +21,7 @@ import tempfile
 from glob import glob
 from pathlib import Path
 from typing import List
+from tqdm import tqdm
 
 from langchain_community.vectorstores.utils import DistanceStrategy
 
@@ -204,16 +205,24 @@ def main() -> None:
 
     # Extract + chunk
     all_docs = []
-    for pdf_file in pdf_files:
-        pdf_path = Path(pdf_file).resolve()
-        logger.info("Extracting + chunking: %s", pdf_path.name)
-        docs = extract_and_chunk_pdf(
-            pdf_path=pdf_path,
-            ocr_model_id=args.ocr_model_id,
-            describe_figures=bool(args.describe_figures),
-            max_pages=max_pages,
-        )
-        all_docs.extend(docs)
+    for pdf_file in tqdm(pdf_files):
+        try:
+            # added try-catch to make more robust (02/02/2026)
+            pdf_path = Path(pdf_file).resolve()
+            logger.info("Extracting + chunking: %s", pdf_path.name)
+            docs = extract_and_chunk_pdf(
+                pdf_path=pdf_path,
+                ocr_model_id=args.ocr_model_id,
+                describe_figures=bool(args.describe_figures),
+                max_pages=max_pages,
+            )
+            all_docs.extend(docs)
+        except Exception as e:
+            logger.error("************************************")
+            logger.error("Error processing %s: %s", pdf_file, e)
+            logger.error("Skipping this file.")
+            logger.error("")
+            logger.error("************************************")
 
     if not all_docs:
         logger.info("No chunks produced. Nothing to load.")

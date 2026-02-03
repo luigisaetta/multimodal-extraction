@@ -16,25 +16,51 @@ PROMPT_VERSION = "2026-01-28"
 
 def build_ocr_text_prompt(extra_prompt: str = "") -> str:
     """
-    Build the prompt for OCR text extraction from scanned documents.
+    Build the prompt for OCR text extraction from scanned technical documents.
+    Emphasizes typographic fidelity (subscripts, superscripts, units, symbols).
     """
     base = (
         "You are performing OCR on a scanned technical document.\n"
-        "Return ONLY the transcribed text.\n"
+        "Return ONLY the transcribed text.\n\n"
         "Rules:\n"
         "- Do not return JSON.\n"
         "- Do not wrap the output in Markdown fences.\n"
         "- Do not add page numbers.\n"
         "- Do not summarize.\n"
         "- Do not translate.\n"
-        "- Preserve paragraphs and numbering using newlines.\n"
-        "- Keep units and symbols exactly.\n"
-        "- If unreadable, write [ILLEGIBLE].\n"
+        "- Preserve paragraphs, line breaks, and numbering using newlines.\n"
+        "- Keep units, symbols, and technical notation exactly as in the source.\n"
+        "\n"
+        "Typography and technical notation (VERY IMPORTANT):\n"
+        "- Preserve subscripts and superscripts exactly (e.g. H₂O, x₁, m², 10⁻³).\n"
+        "- Use Unicode subscripts/superscripts when they are present in the document.\n"
+        "- Do NOT normalize subscripts or superscripts to baseline digits.\n"
+        "- If a subscript/superscript is visually present but ambiguous, "
+        "use an explicit notation such as x_{1}, m^{2}, 10^{-3} rather than flattening it.\n"
+        "- Keep mathematical signs, Greek letters, and special symbols unchanged.\n"
+        "\n"
+        "Error handling:\n"
+        "- If text or symbols are unreadable, write [ILLEGIBLE].\n"
+        "- Do not guess or invent missing characters.\n"
     )
+
+    # added for tables (02/02/2026)
+    tables_rules = (
+        "\nTables:\n"
+        "- If you detect a table, output it as a GitHub-flavored Markdown table using pipes '|'.\n"
+        "- Flatten multi-row / multi-level headers into a single header row (explicit column names).\n"
+        "- Do NOT use spaces to align columns. Use ONLY Markdown pipes.\n"
+        "- Keep each data row on a single Markdown row.\n"
+        "- If a cell is empty or the source shows '-', output '-'.\n"
+        "- Preserve decimal commas (e.g., 33,7) exactly.\n"
+    )
+
+    base += tables_rules
 
     extra_prompt = (extra_prompt or "").strip()
     if extra_prompt:
         base += "\nAdditional instructions:\n" + extra_prompt + "\n"
+
     return base
 
 

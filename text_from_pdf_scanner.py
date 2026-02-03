@@ -259,7 +259,7 @@ def call_multimodal_llm_text_only(
     extra_prompt: str,
     max_side: int,
     jpeg_quality: int,
-) -> str:
+) -> Optional[str]:
     """
     Ask the model for ONLY transcribed text (no JSON).
     This is far more stable across providers (Gemini included).
@@ -273,10 +273,14 @@ def call_multimodal_llm_text_only(
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
     )
-    res = llm.invoke([msg])
-    if hasattr(res, "content"):
-        return str(res.content).strip()
-    return str(res).strip()
+    try:
+        res = llm.invoke([msg])
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Error extracting text: %s", exc)
+        logger.error("Skipping this image.")
+        return None
+
+    return str(getattr(res, "content", res)).strip()
 
 
 def call_multimodal_llm_figures_only(
@@ -284,7 +288,7 @@ def call_multimodal_llm_figures_only(
     page_img: Image.Image,
     max_side: int,
     jpeg_quality: int,
-) -> str:
+) -> Optional[str]:
     """
     Describe ONLY figures/diagrams/technical drawings in the page.
     Ignore tables. If none, return exactly: NONE
@@ -298,10 +302,14 @@ def call_multimodal_llm_figures_only(
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
     )
-    res = llm.invoke([msg])
-    if hasattr(res, "content"):
-        return str(res.content).strip()
-    return str(res).strip()
+    try:
+        res = llm.invoke([msg])
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Error describing figures: %s", exc)
+        logger.error("Skipping this image.")
+        return None
+
+    return str(getattr(res, "content", res)).strip()
 
 
 def append_figures_block(page_text: str, figures_text: str) -> str:
@@ -310,9 +318,7 @@ def append_figures_block(page_text: str, figures_text: str) -> str:
     If figures_text is empty or "NONE", return page_text unchanged.
     """
     cleaned = (figures_text or "").strip()
-    if not cleaned:
-        return page_text
-    if cleaned.upper() == "NONE":
+    if not cleaned or cleaned.upper() == "NONE":
         return page_text
     return page_text.rstrip() + "\n\n[FIGURES]\n" + cleaned + "\n"
 

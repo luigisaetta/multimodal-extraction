@@ -333,7 +333,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
 # App start
 # ----------------------------
 st.set_page_config(page_title="PDF Scanner OCR", layout="wide")
-st.title("Multimodal OCR & Figure Extraction for Technical PDF")
+st.title("Multimodal Text & Figure Extraction for Technical PDF")
 
 init_session_state()
 

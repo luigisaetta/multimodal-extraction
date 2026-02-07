@@ -356,6 +356,7 @@ def main() -> None:
     print(f"===== {Path(args.pdf).name} | PAGE {args.page} =====")
     print(out)
     print("")
+    logger.info("Done")
 
 
 if __name__ == "__main__":

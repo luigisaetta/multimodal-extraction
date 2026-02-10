@@ -42,8 +42,8 @@ MAX_OUTPUT_TOKENS = 32000
 # embeddings
 EMBED_MODEL_ID = "cohere.embed-v4.0"
 
-# REGION = "eu-frankfurt-1"
-REGION = "us-chicago-1"
+REGION = "eu-frankfurt-1"
+# REGION = "us-chicago-1"
 SERVICE_ENDPOINT = f"https://inference.generativeai.{REGION}.oci.oraclecloud.com"
 
 # docling and post processing cleanup

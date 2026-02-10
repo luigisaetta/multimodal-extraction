@@ -25,23 +25,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from PIL import Image
-import pypdfium2 as pdfium
-from pypdf import PdfReader
-
-from docling.document_converter import DocumentConverter
-
 from oci_models import get_llm
 from text_from_pdf_scanner import (
-    call_multimodal_llm_text_only,
-    call_multimodal_llm_figures_only,
-    append_figures_block,
-    is_blank_page,
+    OcrConfig,
     page_has_enough_text,
+    process_page_with_strategy,
+    render_single_page,
+    extract_text_single_page_pypdf,
+    extract_text_single_page_docling,
 )
-from docling_post_processing import cleanup_docling_text_keep_captions
 from utils import get_console_logger
-from config import DOCKLING_ENABLED, ENABLE_CLEANUP
+from config import DOCKLING_ENABLED
 
 logger = get_console_logger()
 
@@ -77,80 +71,6 @@ class SinglePageConfig:
 
     # Figures
     describe_figures: bool = True
-
-
-# ----------------------------
-# Image helpers (same logic)
-# ----------------------------
-def render_single_page(pdf_path: Path, page_1based: int, dpi: int) -> Image.Image:
-    """
-    render a single page to a PIL image using pdfium (similar as in text_from_pdf_scanner.py)
-    """
-    pdf_doc = pdfium.PdfDocument(str(pdf_path))
-    total_pages = len(pdf_doc)
-    if page_1based < 1 or page_1based > total_pages:
-        raise ValueError(f"Invalid page {page_1based}. PDF has {total_pages} pages.")
-
-    page_idx0 = page_1based - 1
-    page = pdf_doc[page_idx0]
-    scale = dpi / 72.0
-    bitmap = page.render(scale=scale)
-    return bitmap.to_pil()
-
-
-# ----------------------------
-# Text extraction: pypdf/docling (single page)
-# ----------------------------
-def extract_text_single_page_pypdf(pdf_path: Path, page_1based: int) -> str:
-    """
-    Extract page text using pypdf.
-
-    Returns:
-        page text
-        Empty string for pages with no extractable text.
-    """
-    reader = PdfReader(str(pdf_path))
-    total_pages = len(reader.pages)
-    if page_1based < 1 or page_1based > total_pages:
-        raise ValueError(f"Invalid page {page_1based}. PDF has {total_pages} pages.")
-
-    page = reader.pages[page_1based - 1]
-    return (page.extract_text() or "").strip()
-
-
-def extract_text_single_page_docling(pdf_path: Path, page_1based: int) -> str:
-    """
-    Extract per-page Markdown from a TEXT_PDF using Docling.
-    (Uses the same export_to_markdown pagination placeholder technique,
-     then picks the requested page.)
-    """
-    pdf_path = Path(pdf_path).expanduser().resolve()
-
-    converter = DocumentConverter()
-    result = converter.convert(str(pdf_path))
-    doc = result.document
-
-    page_break = "\n\n<<<DOCLING_PAGE_BREAK>>>\n\n"
-    md = doc.export_to_markdown(
-        enable_chart_tables=True,
-        compact_tables=True,
-        page_break_placeholder=page_break,
-        include_annotations=False,
-        escape_html=True,
-        escape_underscores=True,
-        image_placeholder="",
-    )
-
-    pages = [p.strip() for p in md.split(page_break)]
-    if page_1based < 1 or page_1based > len(pages):
-        raise ValueError(
-            f"Invalid page {page_1based}. Docling produced {len(pages)} pages."
-        )
-
-    out = pages[page_1based - 1]
-    if ENABLE_CLEANUP:
-        out = cleanup_docling_text_keep_captions(out)
-    return out
 
 
 def resolve_text_mode(cfg: SinglePageConfig) -> TextExtractionMode:
@@ -201,32 +121,20 @@ def extract_single_page(pdf_path: Path, cfg: SinglePageConfig) -> str:
     if need_image:
         page_img = render_single_page(pdf_path, cfg.page, dpi=cfg.dpi)
 
-    # If we might call the model, do blank detection
-    if page_img is not None and (
-        effective_mode in ("vlm", "auto") or cfg.describe_figures
-    ):
-        if is_blank_page(
-            page_img,
-            white_threshold=cfg.blank_white_threshold,
-            min_nonwhite_ratio=cfg.blank_min_nonwhite_ratio,
-            use_center_crop=cfg.blank_use_center_crop,
-        ):
-            return cfg.blank_placeholder
-
     # Try local text extraction if mode allows
-    page_text = ""
+    candidate_text = ""
     if effective_mode in ("pypdf", "auto"):
         if DOCKLING_ENABLED:
             logger.info("Extracting page text via Docling...")
-            page_text = extract_text_single_page_docling(pdf_path, cfg.page)
+            candidate_text = extract_text_single_page_docling(pdf_path, cfg.page)
         else:
             logger.info("Extracting page text via pypdf...")
-            page_text = extract_text_single_page_pypdf(pdf_path, cfg.page)
+            candidate_text = extract_text_single_page_pypdf(pdf_path, cfg.page)
 
     # Decide if we need the model
     need_llm_for_text = (effective_mode == "vlm") or (
         effective_mode == "auto"
-        and not page_has_enough_text(page_text, cfg.min_text_chars_page)
+        and not page_has_enough_text(candidate_text, cfg.min_text_chars_page)
     )
     need_llm = need_llm_for_text or cfg.describe_figures
 
@@ -235,35 +143,31 @@ def extract_single_page(pdf_path: Path, cfg: SinglePageConfig) -> str:
         logger.info("Loading LLM: %s", cfg.model_id)
         llm = get_llm(model_id=cfg.model_id)
 
-    # Text extraction with model if required
-    if need_llm_for_text:
-        if llm is None or page_img is None:
-            raise RuntimeError("Need LLM text extraction but LLM/image not available.")
-        logger.info("Calling LLM for TEXT OCR on this page...")
-        page_text = call_multimodal_llm_text_only(
-            llm,
-            page_img,
-            extra_prompt=cfg.extra_prompt,
-            max_side=cfg.max_side,
-            jpeg_quality=cfg.jpeg_quality,
-        )
+    shared_cfg = OcrConfig(
+        model_id=cfg.model_id,
+        out_path=Path("./out_ocr/_single_page_unused.txt"),
+        dpi=cfg.dpi,
+        text_extraction_mode=cfg.text_mode,
+        input_pdf_type=cfg.input_pdf_type,
+        min_text_chars_page=cfg.min_text_chars_page,
+        extra_prompt=cfg.extra_prompt,
+        blank_white_threshold=cfg.blank_white_threshold,
+        blank_min_nonwhite_ratio=cfg.blank_min_nonwhite_ratio,
+        blank_use_center_crop=cfg.blank_use_center_crop,
+        max_side=cfg.max_side,
+        jpeg_quality=cfg.jpeg_quality,
+        blank_placeholder=cfg.blank_placeholder,
+        describe_figures=cfg.describe_figures,
+    )
 
-    # Figures (optional)
-    if cfg.describe_figures:
-        if llm is None or page_img is None:
-            raise RuntimeError(
-                "describe_figures=True requires both llm and page image."
-            )
-        logger.info("Calling LLM for FIGURES description on this page...")
-        figs = call_multimodal_llm_figures_only(
-            llm,
-            page_img,
-            max_side=cfg.max_side,
-            jpeg_quality=cfg.jpeg_quality,
-        )
-        page_text = append_figures_block(page_text, figs)
-
-    return page_text.strip()
+    return process_page_with_strategy(
+        effective_mode=effective_mode,
+        page_img=page_img,
+        candidate_text=candidate_text,
+        llm=llm,
+        cfg=shared_cfg,
+        need_llm=need_llm,
+    )
 
 
 # ----------------------------

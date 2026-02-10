@@ -1,5 +1,5 @@
 """
-Sample 100 random pages from scanned PDFs in a directory, render each page to JPEG,
+Sample N random pages from scanned PDFs in a directory, render each page to JPEG,
 call OCI GenAI OpenAI-compatible Responses API with a multimodal model, and compute
 the distribution of input/output tokens from response.usage.
 
@@ -35,11 +35,12 @@ PROMPT = (
     "embedded in the page, if present."
 )
 
-SAMPLE_PAGES = 10
+SAMPLE_PAGES = 30
 RANDOM_SEED = 42
 
 # Rendering settings
-RENDER_SCALE = 2.0  # higher => larger images, more tokens/cost
+# higher => larger images, more tokens/cost
+RENDER_SCALE = 2.78  # 250 dpi
 JPEG_QUALITY = 85
 MAX_DIM = 2000  # downscale so max(width,height) <= MAX_DIM (None to disable)
 

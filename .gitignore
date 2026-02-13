@@ -1,4 +1,5 @@
 config_private.py
+config_private.py.cig
 
 # Python
 __pycache__/

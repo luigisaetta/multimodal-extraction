@@ -1,0 +1,29 @@
+"""
+Author: Luigi Saetta
+Date last modified: 2024-04-28
+Python Version: 3.11
+"""
+
+# only the DB is work-iren
+VECTOR_DB_USER = "AIUSER"
+VECTOR_DB_PWD = "DB01genai2026&"
+VECTOR_DSN = "bdb01_medium"
+
+# needed to connect to ADB
+VECTOR_WALLET_DIR = "/Users/lsaetta/Progetti/work-iren/wallet"
+VECTOR_WALLET_PWD = "welcome1"
+
+CONNECT_ARGS = {
+    "user": VECTOR_DB_USER,
+    "password": VECTOR_DB_PWD,
+    "dsn": VECTOR_DSN,
+    "config_dir": VECTOR_WALLET_DIR,
+    "wallet_location": VECTOR_WALLET_DIR,
+    "wallet_password": VECTOR_WALLET_PWD,
+}
+
+# oraemeaint
+COMPARTMENT_ID = "ocid1.compartment.oc1..aaaaaaaaushuwb2evpuf7rcpl4r7ugmqoe7ekmaiik3ra3m7gec3d234eknq"
+
+# OCI OpenAI compatible API KEY
+OPENAI_API_KEY = "sk-Puhjqx1KMZ1aGoawfZVoq5mqfyBT8ScjDrjeF9hiJJeKgHSN"

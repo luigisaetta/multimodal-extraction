@@ -24,8 +24,8 @@ from oracledb import Connection, DB_TYPE_VECTOR
 # moved to LangChain 1.x compatibility
 from langchain_oracledb import OracleVS
 
-from config import DEBUG
-from utils import get_console_logger
+from multimodal_extraction.config import DEBUG
+from multimodal_extraction.utils import get_console_logger
 
 logger = get_console_logger()
 

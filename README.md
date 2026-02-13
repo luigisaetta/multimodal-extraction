@@ -79,12 +79,19 @@ This is intentionally *not* a generic OCR demo, but a foundation for building **
 ## Setup
 
 * Create a conda environment with Python 3.11
-* install required libraries, following [setup_libraries](./setup_libraries.txt)
-* configure NGINX following [nginx config](./ngingx_streamlit_config)
+* install required libraries, following [setup_libraries](./docs/setup_libraries.txt)
+* configure NGINX following [nginx config](./docs/nginx_streamlit.conf)
+
+## Project layout
+
+* `multimodal_extraction/`: core package modules (OCR, chunking, DB, PDF, models, prompts, UI)
+* `scripts/`: operational scripts grouped by purpose (`ingest/`, `db_admin/`, `debug/`, `checks/`)
+* `docs/`: setup and runbook documentation
+* `tests/`: unit and script-level tests
+* `outputs/`: runtime outputs and diagnostics (local only)
 
 ## License
 
 This code is released under **MIT** License
 
 see [LICENSE](./LICENSE)
-

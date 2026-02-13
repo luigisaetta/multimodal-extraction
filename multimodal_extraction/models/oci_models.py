@@ -12,7 +12,7 @@ Description:
 from langchain_oci import ChatOCIGenAI
 from langchain_oci import OCIGenAIEmbeddings
 
-from config import (
+from multimodal_extraction.config import (
     AUTH,
     EMBED_MODEL_ID,
     DEFAULT_MODEL_ID,
@@ -23,7 +23,7 @@ from config import (
     MAX_OUTPUT_TOKENS,
 )
 from config_private import COMPARTMENT_ID
-from utils import get_console_logger
+from multimodal_extraction.utils import get_console_logger
 
 logger = get_console_logger()
 

@@ -54,7 +54,7 @@ def build_ocr_text_prompt(extra_prompt: str = "") -> str:
         "- If a cell is empty or the source shows '-', output '-'.\n"
         "- Preserve decimal commas (e.g., 33,7) exactly.\n"
     )
-
+    
     base += tables_rules
 
     extra_prompt = (extra_prompt or "").strip()

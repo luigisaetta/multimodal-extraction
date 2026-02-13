@@ -11,9 +11,9 @@ Description:
 from typing import Any
 import oracledb
 
-from utils import get_console_logger, mask_secret
+from multimodal_extraction.utils import get_console_logger, mask_secret
 
-from config import COLLECTION_NAME
+from multimodal_extraction.config import COLLECTION_NAME
 from config_private import VECTOR_DB_PWD, VECTOR_DB_USER, VECTOR_DSN, VECTOR_WALLET_DIR
 from config_private import CONNECT_ARGS
 

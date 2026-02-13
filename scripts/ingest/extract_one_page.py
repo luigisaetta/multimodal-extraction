@@ -25,8 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from oci_models import get_llm
-from text_from_pdf_scanner import (
+from multimodal_extraction.models.oci_models import get_llm
+from multimodal_extraction.ocr.text_from_pdf_scanner import (
     OcrConfig,
     page_has_enough_text,
     process_page_with_strategy,
@@ -34,8 +34,8 @@ from text_from_pdf_scanner import (
     extract_text_single_page_pypdf,
     extract_text_single_page_docling,
 )
-from utils import get_console_logger
-from config import DOCKLING_ENABLED
+from multimodal_extraction.utils import get_console_logger
+from multimodal_extraction.config import DOCKLING_ENABLED
 
 logger = get_console_logger()
 

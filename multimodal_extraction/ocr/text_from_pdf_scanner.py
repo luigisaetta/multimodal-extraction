@@ -26,6 +26,7 @@ import base64
 import io
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Literal
 
@@ -35,11 +36,11 @@ import pypdfium2 as pdfium
 from pypdf import PdfReader
 from langchain_core.messages import HumanMessage
 
-from oci_models import get_llm
-from prompts import build_ocr_text_prompt, build_figures_prompt
-from docling_post_processing import cleanup_docling_text_keep_captions
-from utils import get_console_logger
-from config import DOCKLING_ENABLED, ENABLE_CLEANUP
+from multimodal_extraction.models.oci_models import get_llm
+from multimodal_extraction.prompts.prompts import build_ocr_text_prompt, build_figures_prompt
+from multimodal_extraction.ocr.docling_post_processing import cleanup_docling_text_keep_captions
+from multimodal_extraction.utils import get_console_logger
+from multimodal_extraction.config import DOCKLING_ENABLED, ENABLE_CLEANUP
 
 logger = get_console_logger()
 
@@ -62,6 +63,8 @@ class OcrConfig:
     # Rendering / pages
     dpi: int = 200
     max_pages: Optional[int] = None
+    start_page: Optional[int] = None
+    end_page: Optional[int] = None
     save_images: bool = False
     images_dir: Optional[Path] = None
 
@@ -90,6 +93,17 @@ class OcrConfig:
     # figures
     describe_figures: bool = False
 
+    # resilience
+    page_max_retries: int = 2
+    page_retry_backoff_sec: float = 2.0
+    continue_on_page_error: bool = True
+    page_error_placeholder: str = "[PAGE PROCESSING ERROR]"
+
+    # progress checkpoint
+    save_progress_checkpoint: bool = True
+    checkpoint_every_pages: int = 5
+    checkpoint_path: Optional[Path] = None
+
 
 # ----------------------------
 # Image helpers
@@ -111,18 +125,20 @@ def pil_to_data_url(img: Image.Image, max_side: int = 1600, quality: int = 85) -
 
 
 def render_pdf_pages(
-    pdf_path: Path, dpi: int = 200, max_pages: Optional[int] = None
+    pdf_path: Path,
+    dpi: int = 200,
+    page_numbers: Optional[List[int]] = None,
 ) -> List[Image.Image]:
     """Render each PDF page to a PIL image using pdfium."""
     pdf_doc = pdfium.PdfDocument(str(pdf_path))
     total_pages = len(pdf_doc)
-    if max_pages is not None:
-        total_pages = min(total_pages, max_pages)
-
+    selected_pages = page_numbers or list(range(1, total_pages + 1))
     images: List[Image.Image] = []
     scale = dpi / 72.0
-    for page_idx in range(total_pages):
-        page = pdf_doc[page_idx]
+    for page_1based in selected_pages:
+        if page_1based < 1 or page_1based > total_pages:
+            raise ValueError(f"Invalid page {page_1based}. PDF has {total_pages} pages.")
+        page = pdf_doc[page_1based - 1]
         bitmap = page.render(scale=scale)
         images.append(bitmap.to_pil())
     return images
@@ -183,11 +199,43 @@ def format_page_block(page_idx: int, text: str) -> str:
     return text.rstrip() + footer
 
 
+def resolve_selected_pages(cfg: OcrConfig, total_pages: int) -> List[int]:
+    """
+    Resolve the exact list of 1-based pages to process.
+    """
+    start_page = 1 if cfg.start_page is None else int(cfg.start_page)
+    end_page = total_pages if cfg.end_page is None else int(cfg.end_page)
+
+    if start_page < 1:
+        raise ValueError(f"start_page must be >= 1 (got {start_page}).")
+    if end_page < 1:
+        raise ValueError(f"end_page must be >= 1 (got {end_page}).")
+    if start_page > total_pages:
+        raise ValueError(
+            f"start_page={start_page} is out of bounds. PDF has {total_pages} pages."
+        )
+    if end_page > total_pages:
+        raise ValueError(
+            f"end_page={end_page} is out of bounds. PDF has {total_pages} pages."
+        )
+    if start_page > end_page:
+        raise ValueError(
+            f"Invalid page window: start_page ({start_page}) > end_page ({end_page})."
+        )
+
+    pages = list(range(start_page, end_page + 1))
+    if cfg.max_pages is not None:
+        pages = pages[: int(cfg.max_pages)]
+    return pages
+
+
 # ----------------------------
 # Text extraction (pypdf)
 # ----------------------------
 def extract_text_pages_pypdf(
-    pdf_path: Path, max_pages: Optional[int] = None
+    pdf_path: Path,
+    page_numbers: Optional[List[int]] = None,
+    max_pages: Optional[int] = None,
 ) -> List[str]:
     """
     Extract per-page text using pypdf.
@@ -198,12 +246,15 @@ def extract_text_pages_pypdf(
     """
     reader = PdfReader(str(pdf_path))
     total_pages = len(reader.pages)
+    selected_pages = page_numbers or list(range(1, total_pages + 1))
     if max_pages is not None:
-        total_pages = min(total_pages, max_pages)
+        selected_pages = selected_pages[:max_pages]
 
     page_texts: List[str] = []
-    for page_idx in range(total_pages):
-        page = reader.pages[page_idx]
+    for page_1based in selected_pages:
+        if page_1based < 1 or page_1based > total_pages:
+            raise ValueError(f"Invalid page {page_1based}. PDF has {total_pages} pages.")
+        page = reader.pages[page_1based - 1]
         text = page.extract_text() or ""
         page_texts.append(text.strip())
     return page_texts
@@ -225,6 +276,7 @@ def extract_text_single_page_pypdf(pdf_path: Path, page_1based: int) -> str:
 
 def extract_text_pages_docling(
     pdf_path: Path,
+    page_numbers: Optional[List[int]] = None,
     max_pages: Optional[int] = None,
 ) -> List[str]:
     """
@@ -257,16 +309,27 @@ def extract_text_pages_docling(
     )
 
     pages = [p.strip() for p in md.split(page_break)]
+    total_pages = len(pages)
+
+    selected_pages = page_numbers or list(range(1, total_pages + 1))
     if max_pages is not None:
-        pages = pages[:max_pages]
+        selected_pages = selected_pages[:max_pages]
+
+    page_slice: List[str] = []
+    for page_1based in selected_pages:
+        if page_1based < 1 or page_1based > total_pages:
+            raise ValueError(
+                f"Invalid page {page_1based}. Docling produced {total_pages} pages."
+            )
+        page_slice.append(pages[page_1based - 1])
 
     if ENABLE_CLEANUP:
         # ✅ CLEANUP: remove short label noise but keep captions (Figure X / Table Y)
-        pages = [cleanup_docling_text_keep_captions(p) for p in pages]
+        page_slice = [cleanup_docling_text_keep_captions(p) for p in page_slice]
     else:
         logger.info("Cleanup disabled...")
 
-    return pages
+    return page_slice
 
 
 def extract_text_single_page_docling(pdf_path: Path, page_1based: int) -> str:
@@ -352,6 +415,8 @@ def process_page_with_strategy(
             max_side=cfg.max_side,
             jpeg_quality=cfg.jpeg_quality,
         )
+        if page_text is None:
+            raise RuntimeError("Text extraction call returned no content.")
 
     else:
         # auto: try Docling/pypdf, fallback to VLM if page looks empty/weak
@@ -370,6 +435,8 @@ def process_page_with_strategy(
                 max_side=cfg.max_side,
                 jpeg_quality=cfg.jpeg_quality,
             )
+            if page_text is None:
+                raise RuntimeError("Fallback OCR call returned no content.")
 
     # ---- FIGURES (optional) ----
     if cfg.describe_figures:
@@ -384,6 +451,8 @@ def process_page_with_strategy(
             max_side=cfg.max_side,
             jpeg_quality=cfg.jpeg_quality,
         )
+        if figs_text is None:
+            raise RuntimeError("Figures description call returned no content.")
         page_text = append_figures_block(page_text, figs_text)
 
     return (page_text or "").strip()
@@ -462,6 +531,91 @@ def append_figures_block(page_text: str, figures_text: str) -> str:
     return page_text.rstrip() + "\n\n[FIGURES]\n" + cleaned + "\n"
 
 
+def process_page_with_retries(
+    *,
+    source_page: int,
+    effective_mode: TextExtractionMode,
+    page_img: Optional[Image.Image],
+    candidate_text: str,
+    llm,
+    cfg: OcrConfig,
+    need_llm: bool,
+) -> str:
+    """
+    Process one page with retry/backoff.
+    """
+    attempts = max(1, int(cfg.page_max_retries) + 1)
+    last_exc: Optional[Exception] = None
+
+    for attempt_idx in range(attempts):
+        try:
+            return process_page_with_strategy(
+                effective_mode=effective_mode,
+                page_img=page_img,
+                candidate_text=candidate_text,
+                llm=llm,
+                cfg=cfg,
+                need_llm=need_llm,
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            last_exc = exc
+            current_try = attempt_idx + 1
+            if current_try < attempts:
+                delay_sec = max(0.0, float(cfg.page_retry_backoff_sec)) * current_try
+                logger.warning(
+                    "Page %d failed (attempt %d/%d): %s: %s. Retrying in %.1fs",
+                    source_page,
+                    current_try,
+                    attempts,
+                    type(exc).__name__,
+                    exc,
+                    delay_sec,
+                )
+                if delay_sec > 0:
+                    time.sleep(delay_sec)
+                continue
+
+            logger.error(
+                "Page %d failed after %d attempt(s): %s: %s",
+                source_page,
+                attempts,
+                type(exc).__name__,
+                exc,
+            )
+            if cfg.continue_on_page_error:
+                return cfg.page_error_placeholder
+            raise
+
+    if cfg.continue_on_page_error:
+        return cfg.page_error_placeholder
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Page {source_page} failed for unknown reasons.")
+
+
+def write_progress_checkpoint(
+    *,
+    checkpoint_path: Path,
+    parts: List[str],
+    processed_pages: int,
+    total_pages: int,
+    last_page_number: int,
+) -> None:
+    """
+    Persist a lightweight in-progress checkpoint for long OCR jobs.
+    """
+    status = (
+        "\n================== CHECKPOINT ==================\n"
+        f"STATUS: IN_PROGRESS\n"
+        f"PROCESSED_PAGES: {processed_pages}/{total_pages}\n"
+        f"LAST_PAGE: {last_page_number}\n"
+    )
+    checkpoint_text = "".join(parts) + status
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text(checkpoint_text, encoding="utf-8")
+
+
 # ----------------------------
 # Strategy resolution
 # ----------------------------
@@ -498,10 +652,21 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
         cfg.images_dir.mkdir(parents=True, exist_ok=True)
 
     effective_mode = resolve_text_mode(cfg)
+    total_pages = len(PdfReader(str(pdf_path)).pages)
+    selected_pages = resolve_selected_pages(cfg, total_pages)
+    if not selected_pages:
+        raise RuntimeError("No pages selected for processing.")
+
     logger.info(
         "Effective text extraction mode: %s (input_pdf_type=%s)",
         effective_mode,
         cfg.input_pdf_type,
+    )
+    logger.info(
+        "Selected pages: %d page(s), from %d to %d",
+        len(selected_pages),
+        selected_pages[0],
+        selected_pages[-1],
     )
 
     # 1) Decide what we need:
@@ -517,14 +682,16 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
         if DOCKLING_ENABLED:
             logger.info("Extracting text via Docling...")
             pypdf_page_texts = extract_text_pages_docling(
-                pdf_path, max_pages=cfg.max_pages
+                pdf_path,
+                page_numbers=selected_pages,
             )
             logger.info("Docling extracted %d pages.", len(pypdf_page_texts))
         else:
             # use pypdf
             logger.info("Extracting text via pypdf...")
             pypdf_page_texts = extract_text_pages_pypdf(
-                pdf_path, max_pages=cfg.max_pages
+                pdf_path,
+                page_numbers=selected_pages,
             )
             logger.info("pypdf extracted %d pages.", len(pypdf_page_texts))
 
@@ -532,13 +699,18 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     page_images: Optional[List[Image.Image]] = None
     if need_images:
         logger.info("Rendering pages to images...")
-        page_images = render_pdf_pages(pdf_path, dpi=cfg.dpi, max_pages=cfg.max_pages)
+        page_images = render_pdf_pages(
+            pdf_path,
+            dpi=cfg.dpi,
+            page_numbers=selected_pages,
+        )
         logger.info("Rendered %d pages.", len(page_images))
 
         # optional: persist images for debugging
         if cfg.save_images and cfg.images_dir:
-            for idx, img in enumerate(page_images, start=1):
-                img_path = cfg.images_dir / f"page_{idx:04d}.png"
+            for idx, img in enumerate(page_images):
+                source_page = selected_pages[idx]
+                img_path = cfg.images_dir / f"page_{source_page:04d}.png"
                 img.save(img_path)
 
     # Determine number of pages to process
@@ -569,18 +741,30 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     parts.append(f"TEXT_MODE: {effective_mode}\n")
     parts.append(f"INPUT_PDF_TYPE: {cfg.input_pdf_type}\n")
     parts.append(f"DESCRIBE_FIGURES: {cfg.describe_figures}\n")
+    parts.append(f"PAGE_MAX_RETRIES: {cfg.page_max_retries}\n")
+    parts.append(f"CONTINUE_ON_PAGE_ERROR: {cfg.continue_on_page_error}\n")
     parts.append("\n==================== BEGIN TEXT ====================\n\n")
 
-    for idx in range(1, num_pages + 1):
-        logger.info("Processing page %d/%d ...", idx, num_pages)
+    checkpoint_path: Optional[Path] = None
+    if cfg.save_progress_checkpoint:
+        checkpoint_path = (
+            Path(cfg.checkpoint_path).expanduser().resolve()
+            if cfg.checkpoint_path
+            else cfg.out_path.with_suffix(cfg.out_path.suffix + ".checkpoint")
+        )
+
+    for idx in range(num_pages):
+        source_page = selected_pages[idx]
+        logger.info("Processing page %d (%d/%d) ...", source_page, idx + 1, num_pages)
 
         # Get image if available
-        page_img = page_images[idx - 1] if page_images is not None else None
+        page_img = page_images[idx] if page_images is not None else None
         candidate_text = ""
         if pypdf_page_texts is not None:
-            candidate_text = pypdf_page_texts[idx - 1]
+            candidate_text = pypdf_page_texts[idx]
 
-        page_text = process_page_with_strategy(
+        page_text = process_page_with_retries(
+            source_page=source_page,
             effective_mode=effective_mode,
             page_img=page_img,
             candidate_text=candidate_text,
@@ -588,7 +772,19 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
             cfg=cfg,
             need_llm=need_llm,
         )
-        parts.append(format_page_block(idx, page_text))
+        parts.append(format_page_block(source_page, page_text))
+
+        if checkpoint_path is not None:
+            every_n = max(1, int(cfg.checkpoint_every_pages))
+            processed_pages = idx + 1
+            if processed_pages % every_n == 0 or processed_pages == num_pages:
+                write_progress_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    parts=parts,
+                    processed_pages=processed_pages,
+                    total_pages=num_pages,
+                    last_page_number=source_page,
+                )
 
     parts.append("\n===================== END TEXT =====================\n")
     parts.append(f"TOTAL PAGES: {num_pages}\n")
@@ -645,6 +841,22 @@ def main() -> None:
     # Rendering / OCR
     parser.add_argument("--dpi", type=int, default=200)
     parser.add_argument("--max-pages", type=int, default=None)
+    parser.add_argument("--start-page", type=int, default=None)
+    parser.add_argument("--end-page", type=int, default=None)
+    parser.add_argument("--page-max-retries", type=int, default=2)
+    parser.add_argument("--page-retry-backoff-sec", type=float, default=2.0)
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop entire job on first page failure (default is continue with placeholder).",
+    )
+    parser.add_argument(
+        "--no-progress-checkpoint",
+        action="store_true",
+        help="Disable writing periodic progress checkpoints.",
+    )
+    parser.add_argument("--checkpoint-every-pages", type=int, default=5)
+    parser.add_argument("--checkpoint-path", type=str, default=None)
     parser.add_argument("--extra-prompt", type=str, default="")
     parser.add_argument("--save-images", action="store_true")
     parser.add_argument("--images-dir", type=str, default=None)
@@ -680,6 +892,14 @@ def main() -> None:
         out_path=Path(args.out_path),
         dpi=args.dpi,
         max_pages=args.max_pages,
+        start_page=args.start_page,
+        end_page=args.end_page,
+        page_max_retries=int(args.page_max_retries),
+        page_retry_backoff_sec=float(args.page_retry_backoff_sec),
+        continue_on_page_error=not bool(args.fail_fast),
+        save_progress_checkpoint=not bool(args.no_progress_checkpoint),
+        checkpoint_every_pages=int(args.checkpoint_every_pages),
+        checkpoint_path=Path(args.checkpoint_path) if args.checkpoint_path else None,
         extra_prompt=args.extra_prompt,
         save_images=bool(args.save_images),
         images_dir=Path(args.images_dir) if args.images_dir else None,

@@ -29,17 +29,17 @@ from typing import Iterable, List, Optional, Set, Tuple
 
 from tqdm import tqdm
 
-from classify_pdf import ClassifyConfig, classify_pdf
-from config import CHUNK_OVERLAP, CHUNK_SIZE
-from db_utils import get_db_connection
-from oci_models import get_embedding_model
-from ocr_output_chunking_utils import (
+from multimodal_extraction.pdf.classify_pdf import ClassifyConfig, classify_pdf
+from multimodal_extraction.config import CHUNK_OVERLAP, CHUNK_SIZE
+from multimodal_extraction.db.db_utils import get_db_connection
+from multimodal_extraction.models.oci_models import get_embedding_model
+from multimodal_extraction.chunking.ocr_output_chunking_utils import (
     chunks_to_langchain_documents,
     ocr_output_text_to_chunks,
 )
-from oraclevs_admin import OracleVSAdmin
-from text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
-from utils import get_console_logger
+from multimodal_extraction.db.oraclevs_admin import OracleVSAdmin
+from multimodal_extraction.ocr.text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
+from multimodal_extraction.utils import get_console_logger
 
 logger = get_console_logger()
 

@@ -1,77 +1,76 @@
-# `ocr_output_chunking_utils.py` — Chunking OCR/Text Output for Vector Loading
+# `ocr_output_chunking_utils.py` — Page-Level Chunking for OCR Output
 
 ## What this module provides
 
-This module converts the **single-file OCR output** produced by your pipeline into:
-1) structured **chunks** (with optional headers and metadata), and  
-2) **LangChain `Document` objects** ready to be embedded and loaded into Oracle Vector Store.
+This module converts the **single text output** produced by the OCR pipeline into
+**page-level chunks** suitable for embedding and loading into Oracle Vector Search.
 
-It is designed around the output format used by the pipeline, especially the page delimiters.
+Each chunk corresponds to **exactly one PDF page**, preserving a strict mapping
+between the original document structure and the vector store.
 
-### Public API used by other modules
-- **`ocr_output_text_to_chunks(full_text: str, source_name: str, max_chunk_size: int, overlap: int, add_header: bool) -> list[dict]`**
-  - Main function: splits `full_text` into chunks.
-  - Preserves a link to the original document (`source_name`) and page context.
-  - Adds overlap to reduce boundary loss for retrieval.
+---
 
-- **`chunks_to_langchain_documents(chunks: list[dict]) -> list[Document]`**
-  - Converts chunks into `langchain_core.documents.Document`.
-  - Stores text in `page_content` and metadata (source/page/chunk id etc.) in `metadata`.
+## Public API
+
+Used by the Streamlit app and loading pipeline:
+
+- **`ocr_output_text_to_chunks(full_text, source_name, max_chunk_size, overlap, add_header)`**
+  - Parses OCR output and returns one chunk per page.
+  - Function signature is kept stable for backward compatibility.
+  - `max_chunk_size` and `overlap` are currently ignored.
+
+- **`ocr_output_file_to_chunks(ocr_output_path, source_name, ...)`**
+  - Reads an OCR output file and delegates to `ocr_output_text_to_chunks`.
+
+- **`chunks_to_langchain_documents(chunks)`**
+  - Converts chunks into LangChain `Document` objects with attached metadata.
 
 ---
 
 ## Key features
 
-- **Page-aware segmentation**
-  - The chunker is aware of per-page markers (e.g. `--- PAGE N ---`).
-  - This allows metadata such as:
-    - `page_start`, `page_end` (or similar)
-    - source file name
-  - The result is more traceable: retrieval can cite the PDF and relevant page(s).
+- **One chunk = one page**
+  - No intra-page splitting.
+  - Tables, figures, and surrounding text always stay together.
 
-- **Configurable chunk size + overlap**
-  - `max_chunk_size` controls the maximum chunk length (in characters).
-  - `overlap` repeats trailing content into the next chunk to improve recall for queries that hit boundaries.
+- **Page-accurate provenance**
+  - Each chunk includes:
+    - source document name
+    - page number
+    - extraction type (`ocr`)
+  - Enables precise citations and safe document deletion.
 
-- **Optional chunk headers**
-  - When `add_header=True`, the chunk text is prefixed with a small header containing provenance:
-    - source name
-    - page range
-  - This makes retrieved chunks self-describing even outside your application context.
+- **Optional chunk header**
+  - When enabled, prepends a small, stable header with the source filename.
+  - Makes chunks self-describing outside the application context.
 
-- **Stable structure for DB loading**
-  - The chunk dictionary structure is intentionally simple and consistent so:
-    - downstream loaders don’t need to parse OCR format again
-    - it’s easy to test and debug
+- **Provider-agnostic**
+  - Operates only on final extracted text.
+  - Independent of OCR engine, Docling, or LLM provider.
 
 ---
 
 ## Key design decisions
 
-### 1) Chunking is done on the **final pipeline output**, not raw PDF
-The module assumes the extraction pipeline already performed:
-- OCR / text extraction
-- optional figure description injection
-- page delimiting
+- **Page-level chunking over size-based chunking**
+  - Improves correctness for technical PDFs.
+  - Avoids breaking tables and diagrams across chunks.
+  - Simplifies retrieval and explainability.
 
-This keeps the chunker provider-agnostic (it doesn’t care if the text came from Docling, VLM OCR, etc.).
-
-### 2) Prefer *character-based* chunking for predictability
-Token-based chunking can vary by model and tokenizer. This module uses chars to be:
-- deterministic across environments
-- easy to reason about and debug
-
-(You can later add token-aware chunking if you need tighter embedding limits.)
-
-### 3) Preserve provenance as metadata, not “out-of-band”
-Instead of relying on external mappings, provenance is attached directly to each chunk:
-- enables traceability in the vector store
-- supports UI display (“this answer came from PDF X, page Y”)
-- enables selective deletion by `METADATA.source` downstream
+- **Stable interface, flexible internals**
+  - Public function signatures remain unchanged.
+  - Allows future hybrid strategies (e.g. split only very large pages).
 
 ---
 
-## Practical notes / limitations
-- If the OCR output does not contain the expected page delimiters, page-level metadata may degrade (chunks may fall back to “unknown page”).
-- Overlap increases storage and embedding cost; keep it small and measure retrieval impact.
-- If you use Markdown rendering in the output (Docling), chunking still works, but extremely large tables may produce long contiguous sections; consider table-aware splitting if that becomes a bottleneck.
+## Notes
+
+- Very large pages may exceed embedding limits in rare cases.
+- The module relies on OCR page footer markers (`--- PAGE N ---`);
+  if they are missing, chunking cannot reconstruct pages.
+
+---
+
+**In short:** this module acts as a reliable bridge between OCR output and vector
+storage, prioritizing traceability and document fidelity over aggressive chunk
+optimization.

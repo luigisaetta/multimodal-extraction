@@ -1,0 +1,22 @@
+config_private.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# Local outputs and diagnostics
+out_ocr/
+outputs/
+pdf_diagnostics/
+pdf_not_loaded/
+
+# Local input datasets
+pdf/
+claims/

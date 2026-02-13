@@ -37,18 +37,18 @@ from typing import Any
 import streamlit as st
 from streamlit_pdf_viewer import pdf_viewer
 
-from classify_pdf import ClassifyConfig, classify_pdf
-from config import COLLECTION_NAME, MODEL_IDS, DEBUG
+from multimodal_extraction.pdf.classify_pdf import ClassifyConfig, classify_pdf
+from multimodal_extraction.config import COLLECTION_NAME, MODEL_IDS, DEBUG
 
-from oci_models import get_embedding_model
-from ocr_output_chunking_utils import (
+from multimodal_extraction.models.oci_models import get_embedding_model
+from multimodal_extraction.chunking.ocr_output_chunking_utils import (
     chunks_to_langchain_documents,
     ocr_output_text_to_chunks,
 )
-from oraclevs_admin import OracleVSAdmin
-from text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
-from db_utils import get_db_connection, get_connection_params, check_db_connection
-from utils import get_console_logger, print_chunks_loaded
+from multimodal_extraction.db.oraclevs_admin import OracleVSAdmin
+from multimodal_extraction.ocr.text_from_pdf_scanner import OcrConfig, run_ocr_pipeline
+from multimodal_extraction.db.db_utils import get_db_connection, get_connection_params, check_db_connection
+from multimodal_extraction.utils import get_console_logger, print_chunks_loaded
 
 logger = get_console_logger()
 
@@ -161,7 +161,10 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "model_id": MODEL_IDS[0],
         "extra_prompt": "",
         "dpi": 200,
-        "max_pages": 0,
+        "page_selection_mode": "All pages",
+        "single_page": 1,
+        "range_start_page": 1,
+        "range_end_page": 1,
         "white_threshold": 245,
         "min_nonwhite_ratio": 0.010,
         "center_crop": True,
@@ -199,9 +202,36 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             ui["dpi"] = st.slider(
                 "DPI", min_value=120, max_value=300, value=200, step=10
             )
-            ui["max_pages"] = st.number_input(
-                "Max pages (0 = all)", min_value=0, value=0, step=1
+            ui["page_selection_mode"] = st.radio(
+                "Pages to process",
+                options=["All pages", "Single page", "Range"],
+                horizontal=True,
             )
+            if ui["page_selection_mode"] == "Single page":
+                ui["single_page"] = st.number_input(
+                    "Page number (1-based)",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                )
+            elif ui["page_selection_mode"] == "Range":
+                col_start, col_end = st.columns(2)
+                with col_start:
+                    ui["range_start_page"] = st.number_input(
+                        "Start page",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                    )
+                with col_end:
+                    ui["range_end_page"] = st.number_input(
+                        "End page",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                    )
+                if int(ui["range_start_page"]) > int(ui["range_end_page"]):
+                    st.error("Invalid range: start page must be <= end page.")
 
             st.subheader("Blank page detection")
             ui["white_threshold"] = st.slider(
@@ -481,16 +511,25 @@ if nav_page == "OCR & Load":
                 if ui_state["images_dir_str"].strip()
                 else None
             )
+            selected_mode = ui_state["page_selection_mode"]
+            start_page = None
+            end_page = None
+            if selected_mode == "Single page":
+                start_page = int(ui_state["single_page"])
+                end_page = int(ui_state["single_page"])
+            elif selected_mode == "Range":
+                start_page = int(ui_state["range_start_page"])
+                end_page = int(ui_state["range_end_page"])
+                if start_page > end_page:
+                    st.error("Invalid range: start page must be <= end page.")
+                    st.stop()
 
             ocr_cfg = OcrConfig(
                 model_id=ui_state["model_id"],
                 out_path=out_path,
                 dpi=int(ui_state["dpi"]),
-                max_pages=(
-                    None
-                    if int(ui_state["max_pages"]) == 0
-                    else int(ui_state["max_pages"])
-                ),
+                start_page=start_page,
+                end_page=end_page,
                 extra_prompt=ui_state["extra_prompt"],
                 save_images=bool(ui_state["save_images"]),
                 images_dir=images_dir if ui_state["save_images"] else None,

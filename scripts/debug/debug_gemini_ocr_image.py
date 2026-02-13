@@ -20,9 +20,9 @@ from typing import Optional, Dict, Any
 from PIL import Image
 from langchain_core.messages import HumanMessage
 
-from oci_models import get_llm
-from prompts import build_ocr_text_prompt
-from utils import get_console_logger
+from multimodal_extraction.models.oci_models import get_llm
+from multimodal_extraction.prompts.prompts import build_ocr_text_prompt
+from multimodal_extraction.utils import get_console_logger
 
 logger = get_console_logger()
 

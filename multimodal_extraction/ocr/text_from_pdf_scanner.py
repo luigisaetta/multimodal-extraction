@@ -28,7 +28,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, cast
 
 from docling.document_converter import DocumentConverter
 from PIL import Image
@@ -46,6 +46,7 @@ logger = get_console_logger()
 
 PdfTypeLabel = Literal["TEXT_PDF", "SCANNED_PDF", "MIXED_OR_UNKNOWN"]
 TextExtractionMode = Literal["auto", "pypdf", "vlm"]
+ImageFormat = Literal["jpeg", "png"]
 
 
 # ----------------------------
@@ -85,6 +86,7 @@ class OcrConfig:
 
     # image encoding for LLM
     max_side: int = 1600
+    image_format: ImageFormat = "jpeg"
     jpeg_quality: int = 85
 
     # placeholder
@@ -108,9 +110,14 @@ class OcrConfig:
 # ----------------------------
 # Image helpers
 # ----------------------------
-def pil_to_data_url(img: Image.Image, max_side: int = 1600, quality: int = 85) -> str:
-    """Convert PIL image to JPEG data URL (base64), resizing to keep payload manageable."""
-    if img.mode != "RGB":
+def pil_to_data_url(
+    img: Image.Image,
+    max_side: int = 1600,
+    quality: int = 85,
+    image_format: ImageFormat = "jpeg",
+) -> str:
+    """Convert PIL image to data URL (JPEG default, PNG optional)."""
+    if image_format == "jpeg" and img.mode != "RGB":
         img = img.convert("RGB")
 
     width, height = img.size
@@ -119,9 +126,18 @@ def pil_to_data_url(img: Image.Image, max_side: int = 1600, quality: int = 85) -
         img = img.resize((int(width * scale), int(height * scale)))
 
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    if image_format == "jpeg":
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        mime = "image/jpeg"
+    elif image_format == "png":
+        # Uncompressed PNG path (explicitly requested option).
+        img.save(buf, format="PNG", compress_level=0, optimize=False)
+        mime = "image/png"
+    else:
+        raise ValueError(f"Unsupported image_format={image_format!r}.")
+
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{b64}"
+    return f"data:{mime};base64,{b64}"
 
 
 def render_pdf_pages(
@@ -414,6 +430,7 @@ def process_page_with_strategy(
             extra_prompt=cfg.extra_prompt,
             max_side=cfg.max_side,
             jpeg_quality=cfg.jpeg_quality,
+            image_format=cfg.image_format,
         )
         if page_text is None:
             raise RuntimeError("Text extraction call returned no content.")
@@ -434,6 +451,7 @@ def process_page_with_strategy(
                 extra_prompt=cfg.extra_prompt,
                 max_side=cfg.max_side,
                 jpeg_quality=cfg.jpeg_quality,
+                image_format=cfg.image_format,
             )
             if page_text is None:
                 raise RuntimeError("Fallback OCR call returned no content.")
@@ -450,6 +468,7 @@ def process_page_with_strategy(
             page_img,
             max_side=cfg.max_side,
             jpeg_quality=cfg.jpeg_quality,
+            image_format=cfg.image_format,
         )
         if figs_text is None:
             raise RuntimeError("Figures description call returned no content.")
@@ -467,12 +486,18 @@ def call_multimodal_llm_text_only(
     extra_prompt: str,
     max_side: int,
     jpeg_quality: int,
+    image_format: ImageFormat = "jpeg",
 ) -> Optional[str]:
     """
     Ask the model for ONLY transcribed text (no JSON).
     This is far more stable across providers (Gemini included).
     """
-    data_url = pil_to_data_url(page_img, max_side=max_side, quality=jpeg_quality)
+    data_url = pil_to_data_url(
+        page_img,
+        max_side=max_side,
+        quality=jpeg_quality,
+        image_format=image_format,
+    )
     prompt_text = build_ocr_text_prompt(extra_prompt=extra_prompt)
 
     msg = HumanMessage(
@@ -496,12 +521,18 @@ def call_multimodal_llm_figures_only(
     page_img: Image.Image,
     max_side: int,
     jpeg_quality: int,
+    image_format: ImageFormat = "jpeg",
 ) -> Optional[str]:
     """
     Describe ONLY figures/diagrams/technical drawings in the page.
     Ignore tables. If none, return exactly: NONE
     """
-    data_url = pil_to_data_url(page_img, max_side=max_side, quality=jpeg_quality)
+    data_url = pil_to_data_url(
+        page_img,
+        max_side=max_side,
+        quality=jpeg_quality,
+        image_format=image_format,
+    )
     prompt_text = build_figures_prompt()
 
     msg = HumanMessage(
@@ -645,6 +676,12 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     pdf_path = Path(pdf_path).expanduser().resolve()
     cfg.out_path = Path(cfg.out_path).expanduser().resolve()
     cfg.out_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_image_format = str(cfg.image_format).lower()
+    if normalized_image_format not in {"jpeg", "png"}:
+        raise ValueError(
+            f"Invalid image_format={cfg.image_format!r}. Allowed: jpeg, png."
+        )
+    cfg.image_format = cast(ImageFormat, normalized_image_format)
 
     if cfg.save_images:
         if cfg.images_dir is None:
@@ -739,6 +776,7 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     parts.append(f"DPI: {cfg.dpi}\n")
     parts.append(f"MODEL_ID: {cfg.model_id}\n")
     parts.append(f"TEXT_MODE: {effective_mode}\n")
+    parts.append(f"IMAGE_FORMAT: {cfg.image_format}\n")
     parts.append(f"INPUT_PDF_TYPE: {cfg.input_pdf_type}\n")
     parts.append(f"DESCRIBE_FIGURES: {cfg.describe_figures}\n")
     parts.append(f"PAGE_MAX_RETRIES: {cfg.page_max_retries}\n")
@@ -872,6 +910,13 @@ def main() -> None:
 
     # image payload
     parser.add_argument("--max-side", type=int, default=1600)
+    parser.add_argument(
+        "--image-format",
+        type=str,
+        default="jpeg",
+        choices=["jpeg", "png"],
+        help="Image format sent to multimodal LLM (default: jpeg).",
+    )
     parser.add_argument("--jpeg-quality", type=int, default=85)
 
     # figures
@@ -907,6 +952,7 @@ def main() -> None:
         blank_min_nonwhite_ratio=args.blank_min_nonwhite_ratio,
         blank_use_center_crop=not bool(args.no_center_crop),
         max_side=args.max_side,
+        image_format=args.image_format,
         jpeg_quality=args.jpeg_quality,
         describe_figures=bool(args.describe_figures),
         text_extraction_mode=args.text_mode,

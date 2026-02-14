@@ -82,6 +82,27 @@ This is intentionally *not* a generic OCR demo, but a foundation for building **
 * install required libraries, following [setup_libraries](./docs/setup_libraries.txt)
 * configure NGINX following [nginx config](./docs/nginx_streamlit.conf)
 
+## Run Streamlit UI
+
+From repo root:
+
+```bash
+./start_ocr_ui.sh
+```
+
+Alternative:
+
+```bash
+PYTHONPATH=$(pwd) python -m streamlit run multimodal_extraction/ui/streamlit_app.py
+```
+
+## OCR image payload format (VLM input)
+
+Default is `jpeg` (backward-compatible).
+
+* In UI: use **Image format sent to VLM** (`jpeg` or `png`) and click **Check image payload settings**.
+* In CLI: use `--image-format jpeg|png` in `multimodal_extraction/ocr/text_from_pdf_scanner.py`.
+
 ## Project layout
 
 * `multimodal_extraction/`: core package modules (OCR, chunking, DB, PDF, models, prompts, UI)

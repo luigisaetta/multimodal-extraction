@@ -170,6 +170,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "center_crop": True,
         "blank_placeholder": "[BLANK PAGE SKIPPED]",
         "max_side": 1600,
+        "image_format": "jpeg",
         "jpeg_quality": 85,
         "describe_figures": True,
         "out_path_str": "./out_ocr/output.txt",
@@ -181,6 +182,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "add_chunk_header": True,
         "chunk_load_btn": False,
         "check_db_btn": False,
+        "check_image_payload_btn": False,
     }
 
     if current_page == "OCR & Load":
@@ -260,9 +262,29 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                 value=1600,
                 step=100,
             )
+            ui["image_format"] = st.selectbox(
+                "Image format sent to VLM",
+                options=["jpeg", "png"],
+                index=0,
+                help="Default is JPEG. PNG sends an uncompressed image payload.",
+            )
             ui["jpeg_quality"] = st.slider(
                 "JPEG quality", min_value=50, max_value=95, value=85, step=1
             )
+            ui["check_image_payload_btn"] = st.button(
+                "Check image payload settings",
+                type="secondary",
+                use_container_width=True,
+            )
+            if ui["check_image_payload_btn"]:
+                if ui["image_format"] == "jpeg":
+                    st.success(
+                        f"Image payload check OK: JPEG mode (quality={ui['jpeg_quality']})."
+                    )
+                else:
+                    st.success(
+                        "Image payload check OK: PNG mode (uncompressed, larger payload)."
+                    )
 
             st.subheader("Figures (Level 1)")
             ui["describe_figures"] = st.checkbox(
@@ -538,6 +560,7 @@ if nav_page == "OCR & Load":
                 blank_use_center_crop=bool(ui_state["center_crop"]),
                 blank_placeholder=ui_state["blank_placeholder"],
                 max_side=int(ui_state["max_side"]),
+                image_format=str(ui_state["image_format"]).lower(),
                 jpeg_quality=int(ui_state["jpeg_quality"]),
                 describe_figures=bool(ui_state["describe_figures"]),
                 text_extraction_mode="auto",

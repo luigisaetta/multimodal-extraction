@@ -23,6 +23,9 @@ This project provides a **single ingestion pipeline** that:
 
 ---
 
+![UI](./docs/ui01.png)
+
+
 ## Main features
 
 - **PDF classification**

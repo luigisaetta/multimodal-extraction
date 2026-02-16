@@ -74,7 +74,7 @@ pip install pytest pytest-cov
 3. Adjust `multimodal_extraction/config.py` as needed:
    - `REGION`, `SERVICE_ENDPOINT`
    - `MODEL_IDS`, `DEFAULT_MODEL_ID`, `EMBED_MODEL_ID`
-   - `DOCKLING_ENABLED`, `ENABLE_MODEL_COMPARISON`
+   - `DOCLING_ENABLED`, `ENABLE_MODEL_COMPARISON`
 
 ## Quick start
 

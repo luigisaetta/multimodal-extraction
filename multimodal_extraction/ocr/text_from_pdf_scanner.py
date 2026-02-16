@@ -23,24 +23,39 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import base64
+import hashlib
 import io
+import json
 import logging
 import os
+import re
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Literal, cast
+from typing import Any, Dict, List, Optional, Literal, cast
 
 from docling.document_converter import DocumentConverter
 from PIL import Image
 import pypdfium2 as pdfium
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from langchain_core.messages import HumanMessage
 
 from multimodal_extraction.models.oci_models import get_llm
 from multimodal_extraction.prompts.prompts import build_ocr_text_prompt, build_figures_prompt
 from multimodal_extraction.ocr.docling_post_processing import cleanup_docling_text_keep_captions
 from multimodal_extraction.utils import get_console_logger
-from multimodal_extraction.config import DOCKLING_ENABLED, ENABLE_CLEANUP
+from multimodal_extraction.config import (
+    DOCLING_ENABLED,
+    DOCLING_TIMEOUT_SEC,
+    DOCLING_FALLBACK_TO_PYPDF,
+    DOCLING_MAX_CHUNK_PAGES,
+    ENABLE_CLEANUP,
+    ENABLE_MODEL_COMPARISON,
+    REFERENCE_MODEL_ID,
+    MODEL_COMPARISON_CACHE_DIR,
+)
 
 logger = get_console_logger()
 
@@ -95,6 +110,12 @@ class OcrConfig:
     # figures
     describe_figures: bool = False
 
+    # optional model comparison (WER against reference model)
+    enable_model_comparison: bool = ENABLE_MODEL_COMPARISON
+    reference_model_id: str = REFERENCE_MODEL_ID
+    comparison_cache_dir: Path = Path(MODEL_COMPARISON_CACHE_DIR)
+    comparison_result: Optional[Dict[str, Any]] = None
+
     # resilience
     page_max_retries: int = 2
     page_retry_backoff_sec: float = 2.0
@@ -138,6 +159,91 @@ def pil_to_data_url(
 
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return f"data:{mime};base64,{b64}"
+
+
+def _tokenize_for_wer(text: str) -> List[str]:
+    """Tokenize text into normalized word units for WER."""
+    lowered = (text or "").lower()
+    tokens = re.findall(r"\w+", lowered, flags=re.UNICODE)
+    return tokens
+
+
+def _edit_distance_words(ref_tokens: List[str], hyp_tokens: List[str]) -> int:
+    """Levenshtein distance on token lists."""
+    n = len(ref_tokens)
+    m = len(hyp_tokens)
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+
+    prev = list(range(m + 1))
+    for i in range(1, n + 1):
+        curr = [i] + [0] * m
+        for j in range(1, m + 1):
+            sub_cost = 0 if ref_tokens[i - 1] == hyp_tokens[j - 1] else 1
+            curr[j] = min(
+                prev[j] + 1,       # deletion
+                curr[j - 1] + 1,   # insertion
+                prev[j - 1] + sub_cost,  # substitution
+            )
+        prev = curr
+    return prev[m]
+
+
+def compute_wer(reference_text: str, hypothesis_text: str) -> float:
+    """Compute word error rate (WER)."""
+    ref_tokens = _tokenize_for_wer(reference_text)
+    hyp_tokens = _tokenize_for_wer(hypothesis_text)
+    if not ref_tokens:
+        return 0.0 if not hyp_tokens else 1.0
+    return _edit_distance_words(ref_tokens, hyp_tokens) / len(ref_tokens)
+
+
+def _sanitize_model_id(model_id: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", model_id.strip())
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _reference_cache_path(
+    *,
+    cache_dir: Path,
+    pdf_digest: str,
+    reference_model_id: str,
+    page_number: int,
+    prompt_fingerprint: str,
+    image_format: str,
+    max_side: int,
+    jpeg_quality: int,
+) -> Path:
+    model_key = _sanitize_model_id(reference_model_id)
+    return (
+        cache_dir
+        / model_key
+        / pdf_digest
+        / f"p{page_number:05d}_{prompt_fingerprint}_{image_format}_{max_side}_{jpeg_quality}.txt"
+    )
+
+
+def _read_cached_reference_text(cache_path: Path) -> Optional[str]:
+    if not cache_path.exists():
+        return None
+    return cache_path.read_text(encoding="utf-8")
+
+
+def _write_cached_reference_text(cache_path: Path, text: str) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(text, encoding="utf-8")
 
 
 def render_pdf_pages(
@@ -294,6 +400,7 @@ def extract_text_pages_docling(
     pdf_path: Path,
     page_numbers: Optional[List[int]] = None,
     max_pages: Optional[int] = None,
+    timeout_sec: Optional[float] = None,
 ) -> List[str]:
     """
     Extract per-page Markdown from a TEXT_PDF using Docling.
@@ -304,27 +411,7 @@ def extract_text_pages_docling(
     """
     pdf_path = Path(pdf_path).expanduser().resolve()
 
-    converter = DocumentConverter()
-    result = converter.convert(str(pdf_path))
-    doc = result.document
-
-    # Token unlikely to appear in normal content
-    page_break = "\n\n<<<DOCLING_PAGE_BREAK>>>\n\n"
-
-    md = doc.export_to_markdown(
-        # Core: keep tables and paginate
-        enable_chart_tables=True,
-        compact_tables=True,
-        page_break_placeholder=page_break,
-        # “Light markdown”: reduce noise
-        include_annotations=False,
-        escape_html=True,
-        escape_underscores=True,
-        # Suppress image placeholders without needing ImageRefMode
-        image_placeholder="",
-    )
-
-    pages = [p.strip() for p in md.split(page_break)]
+    pages = _extract_all_pages_docling_guarded(pdf_path, timeout_sec=timeout_sec)
     total_pages = len(pages)
 
     selected_pages = page_numbers or list(range(1, total_pages + 1))
@@ -346,6 +433,226 @@ def extract_text_pages_docling(
         logger.info("Cleanup disabled...")
 
     return page_slice
+
+
+def _extract_all_pages_docling(pdf_path: Path) -> List[str]:
+    """
+    Convert a PDF with Docling and return all pages as Markdown slices.
+    """
+    converter = DocumentConverter()
+    result = converter.convert(str(pdf_path))
+    doc = result.document
+
+    page_break = "\n\n<<<DOCLING_PAGE_BREAK>>>\n\n"
+    md = doc.export_to_markdown(
+        enable_chart_tables=True,
+        compact_tables=True,
+        page_break_placeholder=page_break,
+        include_annotations=False,
+        escape_html=True,
+        escape_underscores=True,
+        image_placeholder="",
+    )
+    return [p.strip() for p in md.split(page_break)]
+
+
+def _extract_all_pages_docling_guarded(
+    pdf_path: Path,
+    timeout_sec: Optional[float],
+) -> List[str]:
+    """
+    Run Docling extraction, optionally guarded by a hard timeout.
+    """
+    if timeout_sec is None or float(timeout_sec) <= 0:
+        return _extract_all_pages_docling(pdf_path)
+
+    timeout_val = float(timeout_sec)
+    helper_code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from multimodal_extraction.ocr.text_from_pdf_scanner import _extract_all_pages_docling\n"
+        "pages = _extract_all_pages_docling(Path(sys.argv[1]))\n"
+        "Path(sys.argv[2]).write_text(json.dumps(pages), encoding='utf-8')\n"
+    )
+
+    tmp_out_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_file:
+            tmp_out_path = Path(tmp_file.name)
+
+        # Use a fresh interpreter process (exec-based), not fork, to avoid
+        # macOS CoreFoundation/Objective-C fork-safety crashes.
+        proc = subprocess.run(
+            [sys.executable, "-c", helper_code, str(pdf_path), str(tmp_out_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout_val,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"Docling timed out after {timeout_val:.1f}s while processing {pdf_path.name}."
+        ) from exc
+
+    try:
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            details = stderr or stdout or f"exit code {proc.returncode}"
+            raise RuntimeError(f"Docling subprocess failed: {details}")
+
+        if tmp_out_path is None or not tmp_out_path.exists():
+            raise RuntimeError(
+                f"Docling subprocess exited without returning content for {pdf_path.name}."
+            )
+
+        payload = json.loads(tmp_out_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                f"Docling subprocess returned unexpected payload type: {type(payload).__name__}."
+            )
+        return cast(List[str], payload)
+    finally:
+        if tmp_out_path is not None and tmp_out_path.exists():
+            tmp_out_path.unlink(missing_ok=True)
+
+
+def _write_pdf_subset(
+    source_pdf_path: Path,
+    page_numbers: List[int],
+    target_pdf_path: Path,
+) -> None:
+    """
+    Write a temporary PDF containing only the selected 1-based pages.
+    """
+    reader = PdfReader(str(source_pdf_path))
+    writer = PdfWriter()
+    total_pages = len(reader.pages)
+    for page_1based in page_numbers:
+        if page_1based < 1 or page_1based > total_pages:
+            raise ValueError(
+                f"Invalid page {page_1based}. PDF has {total_pages} pages."
+            )
+        writer.add_page(reader.pages[page_1based - 1])
+    with target_pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _extract_docling_for_page_numbers(
+    pdf_path: Path,
+    page_numbers: List[int],
+    timeout_sec: Optional[float],
+) -> List[str]:
+    """
+    Run Docling on a temporary subset PDF and return one text per requested page.
+    """
+    if not page_numbers:
+        return []
+
+    tmp_pdf_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+            tmp_pdf_path = Path(tmp_file.name)
+
+        _write_pdf_subset(pdf_path, page_numbers, tmp_pdf_path)
+        page_texts = extract_text_pages_docling(
+            tmp_pdf_path,
+            timeout_sec=timeout_sec,
+        )
+        if len(page_texts) != len(page_numbers):
+            raise RuntimeError(
+                "Docling subset extraction returned an unexpected page count "
+                f"(expected {len(page_numbers)}, got {len(page_texts)})."
+            )
+        return page_texts
+    finally:
+        if tmp_pdf_path is not None and tmp_pdf_path.exists():
+            tmp_pdf_path.unlink(missing_ok=True)
+
+
+def _extract_candidate_text_pages_docling_resilient(
+    pdf_path: Path,
+    *,
+    selected_pages: List[int],
+    docling_timeout_sec: Optional[float],
+    docling_fallback_to_pypdf: bool,
+    docling_max_chunk_pages: int,
+) -> List[str]:
+    """
+    Resilient Docling extraction:
+    - process in chunks
+    - on chunk failure, recursively split
+    - if a single page still fails, fallback to pypdf only for that page
+    """
+    if not selected_pages:
+        return []
+
+    page_to_text: Dict[int, str] = {}
+
+    def process_segment(segment_pages: List[int]) -> None:
+        if not segment_pages:
+            return
+        seg_start = segment_pages[0]
+        seg_end = segment_pages[-1]
+        logger.info(
+            "Docling chunk start: pages %d-%d (%d page(s))",
+            seg_start,
+            seg_end,
+            len(segment_pages),
+        )
+        try:
+            segment_texts = _extract_docling_for_page_numbers(
+                pdf_path=pdf_path,
+                page_numbers=segment_pages,
+                timeout_sec=docling_timeout_sec,
+            )
+            for page_num, text in zip(segment_pages, segment_texts):
+                page_to_text[page_num] = text
+            logger.info(
+                "Docling chunk completed: pages %d-%d (%d page(s))",
+                seg_start,
+                seg_end,
+                len(segment_pages),
+            )
+            return
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if len(segment_pages) == 1:
+                page_num = segment_pages[0]
+                if not docling_fallback_to_pypdf:
+                    raise RuntimeError(
+                        f"Docling failed on page {page_num} and fallback is disabled."
+                    ) from exc
+                logger.warning(
+                    "Docling failed on page %d (%s: %s). Falling back to pypdf for this page.",
+                    page_num,
+                    type(exc).__name__,
+                    exc,
+                )
+                page_to_text[page_num] = extract_text_single_page_pypdf(pdf_path, page_num)
+                return
+
+            mid = len(segment_pages) // 2
+            left = segment_pages[:mid]
+            right = segment_pages[mid:]
+            logger.warning(
+                "Docling failed on pages %d-%d (%s: %s). Splitting chunk into [%d-%d] and [%d-%d].",
+                segment_pages[0],
+                segment_pages[-1],
+                type(exc).__name__,
+                exc,
+                left[0],
+                left[-1],
+                right[0],
+                right[-1],
+            )
+            process_segment(left)
+            process_segment(right)
+
+    chunk_size = max(1, int(docling_max_chunk_pages))
+    for start_idx in range(0, len(selected_pages), chunk_size):
+        process_segment(selected_pages[start_idx : start_idx + chunk_size])
+
+    return [page_to_text[p] for p in selected_pages]
 
 
 def extract_text_single_page_docling(pdf_path: Path, page_1based: int) -> str:
@@ -665,6 +972,57 @@ def resolve_text_mode(cfg: OcrConfig) -> TextExtractionMode:
     return "auto"
 
 
+def extract_candidate_text_pages(
+    pdf_path: Path,
+    *,
+    effective_mode: TextExtractionMode,
+    selected_pages: List[int],
+    docling_enabled: bool = DOCLING_ENABLED,
+    docling_timeout_sec: Optional[float] = DOCLING_TIMEOUT_SEC,
+    docling_fallback_to_pypdf: bool = DOCLING_FALLBACK_TO_PYPDF,
+    docling_max_chunk_pages: int = DOCLING_MAX_CHUNK_PAGES,
+) -> Optional[List[str]]:
+    """
+    Extract text candidate pages for pypdf/auto modes.
+    When Docling is enabled, it is tried first and can fallback to pypdf on failure/timeout.
+    """
+    if effective_mode not in ("pypdf", "auto"):
+        return None
+
+    if docling_enabled:
+        logger.info(
+            "Extracting text via Docling (timeout=%ss, chunk=%s pages)...",
+            "off" if not docling_timeout_sec else docling_timeout_sec,
+            docling_max_chunk_pages,
+        )
+        try:
+            page_texts = _extract_candidate_text_pages_docling_resilient(
+                pdf_path,
+                selected_pages=selected_pages,
+                docling_timeout_sec=docling_timeout_sec,
+                docling_fallback_to_pypdf=docling_fallback_to_pypdf,
+                docling_max_chunk_pages=docling_max_chunk_pages,
+            )
+            logger.info("Docling extracted %d pages.", len(page_texts))
+            return page_texts
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if not docling_fallback_to_pypdf:
+                raise
+            logger.warning(
+                "Docling failed (%s: %s). Falling back to pypdf.",
+                type(exc).__name__,
+                exc,
+            )
+
+    logger.info("Extracting text via pypdf...")
+    page_texts = extract_text_pages_pypdf(
+        pdf_path,
+        page_numbers=selected_pages,
+    )
+    logger.info("pypdf extracted %d pages.", len(page_texts))
+    return page_texts
+
+
 # ----------------------------
 # Pipeline
 # ----------------------------
@@ -688,6 +1046,8 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
             cfg.images_dir = cfg.out_path.parent / "images"
         cfg.images_dir.mkdir(parents=True, exist_ok=True)
 
+    cfg.comparison_cache_dir = Path(cfg.comparison_cache_dir).expanduser().resolve()
+
     effective_mode = resolve_text_mode(cfg)
     total_pages = len(PdfReader(str(pdf_path)).pages)
     selected_pages = resolve_selected_pages(cfg, total_pages)
@@ -710,27 +1070,19 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     # - pypdf mode: pypdf text; render images ONLY if describe_figures=True
     # - vlm mode: render images; call VLM OCR; (figures uses same images)
     # - auto mode: try pypdf; render images (needed for fallback OCR and/or figures)
-    need_images = cfg.describe_figures or (effective_mode in ("vlm", "auto"))
+    comparison_enabled = bool(cfg.enable_model_comparison)
+    need_images = (
+        cfg.describe_figures
+        or (effective_mode in ("vlm", "auto"))
+        or comparison_enabled
+    )
 
     # 2) Extract pypdf text pages if needed
-    pypdf_page_texts: Optional[List[str]] = None
-    if effective_mode in ("pypdf", "auto"):
-        # TODO see if there is a better way to plug docling here
-        if DOCKLING_ENABLED:
-            logger.info("Extracting text via Docling...")
-            pypdf_page_texts = extract_text_pages_docling(
-                pdf_path,
-                page_numbers=selected_pages,
-            )
-            logger.info("Docling extracted %d pages.", len(pypdf_page_texts))
-        else:
-            # use pypdf
-            logger.info("Extracting text via pypdf...")
-            pypdf_page_texts = extract_text_pages_pypdf(
-                pdf_path,
-                page_numbers=selected_pages,
-            )
-            logger.info("pypdf extracted %d pages.", len(pypdf_page_texts))
+    pypdf_page_texts = extract_candidate_text_pages(
+        pdf_path,
+        effective_mode=effective_mode,
+        selected_pages=selected_pages,
+    )
 
     # 3) Render images if needed
     page_images: Optional[List[Image.Image]] = None
@@ -769,6 +1121,32 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
         logger.info("Loading LLM: %s", cfg.model_id)
         llm = get_llm(model_id=cfg.model_id)
 
+    reference_llm = None
+    reference_model_id = (cfg.reference_model_id or "").strip()
+    prompt_fingerprint = hashlib.sha1(
+        build_ocr_text_prompt(extra_prompt=cfg.extra_prompt).encode("utf-8")
+    ).hexdigest()[:12]
+    pdf_digest = _sha256_file(pdf_path)
+
+    comparison_pages_evaluated = 0
+    comparison_cache_hits = 0
+    comparison_cache_misses = 0
+    comparison_errors = 0
+    comparison_page_metrics: List[Dict[str, Any]] = []
+
+    if comparison_enabled:
+        if not reference_model_id:
+            logger.warning(
+                "Model comparison enabled but no reference_model_id provided. Comparison disabled for this run."
+            )
+            comparison_enabled = False
+        else:
+            if llm is not None and reference_model_id == cfg.model_id:
+                reference_llm = llm
+            else:
+                logger.info("Loading reference model for comparison: %s", reference_model_id)
+                reference_llm = get_llm(model_id=reference_model_id)
+
     # 5) Assemble output
     parts: List[str] = []
     filename = os.path.basename(str(pdf_path))
@@ -777,6 +1155,9 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
     parts.append(f"MODEL_ID: {cfg.model_id}\n")
     parts.append(f"TEXT_MODE: {effective_mode}\n")
     parts.append(f"IMAGE_FORMAT: {cfg.image_format}\n")
+    parts.append(f"MODEL_COMPARISON_ENABLED: {comparison_enabled}\n")
+    if comparison_enabled:
+        parts.append(f"REFERENCE_MODEL_ID: {reference_model_id}\n")
     parts.append(f"INPUT_PDF_TYPE: {cfg.input_pdf_type}\n")
     parts.append(f"DESCRIBE_FIGURES: {cfg.describe_figures}\n")
     parts.append(f"PAGE_MAX_RETRIES: {cfg.page_max_retries}\n")
@@ -812,6 +1193,72 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
         )
         parts.append(format_page_block(source_page, page_text))
 
+        if comparison_enabled:
+            try:
+                if reference_llm is None:
+                    raise RuntimeError("Reference model is not loaded.")
+
+                reference_img = page_img
+                if reference_img is None:
+                    reference_img = render_single_page(
+                        pdf_path,
+                        page_1based=source_page,
+                        dpi=cfg.dpi,
+                    )
+
+                cache_path = _reference_cache_path(
+                    cache_dir=cfg.comparison_cache_dir,
+                    pdf_digest=pdf_digest,
+                    reference_model_id=reference_model_id,
+                    page_number=source_page,
+                    prompt_fingerprint=prompt_fingerprint,
+                    image_format=cfg.image_format,
+                    max_side=cfg.max_side,
+                    jpeg_quality=cfg.jpeg_quality,
+                )
+                reference_text = _read_cached_reference_text(cache_path)
+                cache_hit = reference_text is not None
+
+                if not cache_hit:
+                    comparison_cache_misses += 1
+                    reference_text = call_multimodal_llm_text_only(
+                        reference_llm,
+                        reference_img,
+                        extra_prompt=cfg.extra_prompt,
+                        max_side=cfg.max_side,
+                        jpeg_quality=cfg.jpeg_quality,
+                        image_format=cfg.image_format,
+                    )
+                    if reference_text is None:
+                        raise RuntimeError("Reference OCR call returned no content.")
+                    _write_cached_reference_text(cache_path, reference_text)
+                else:
+                    comparison_cache_hits += 1
+
+                page_wer = compute_wer(reference_text, page_text)
+                comparison_pages_evaluated += 1
+                comparison_page_metrics.append(
+                    {
+                        "page": source_page,
+                        "wer": page_wer,
+                        "cache_hit": cache_hit,
+                    }
+                )
+                logger.info(
+                    "Model comparison | page=%d | ref=%s | wer=%.4f",
+                    source_page,
+                    reference_model_id,
+                    page_wer,
+                )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                comparison_errors += 1
+                logger.warning(
+                    "Model comparison skipped on page %d: %s: %s",
+                    source_page,
+                    type(exc).__name__,
+                    exc,
+                )
+
         if checkpoint_path is not None:
             every_n = max(1, int(cfg.checkpoint_every_pages))
             processed_pages = idx + 1
@@ -826,6 +1273,39 @@ def run_ocr_pipeline(pdf_path: Path, cfg: OcrConfig) -> str:
 
     parts.append("\n===================== END TEXT =====================\n")
     parts.append(f"TOTAL PAGES: {num_pages}\n")
+
+    mean_wer = None
+    if comparison_page_metrics:
+        mean_wer = sum(p["wer"] for p in comparison_page_metrics) / len(
+            comparison_page_metrics
+        )
+        logger.info(
+            "Model comparison summary | ref=%s | pages=%d | mean_wer=%.4f | cache_hits=%d | cache_misses=%d | errors=%d",
+            reference_model_id,
+            comparison_pages_evaluated,
+            mean_wer,
+            comparison_cache_hits,
+            comparison_cache_misses,
+            comparison_errors,
+        )
+    elif comparison_enabled:
+        logger.info(
+            "Model comparison summary | ref=%s | pages=0 | cache_hits=%d | cache_misses=%d | errors=%d",
+            reference_model_id,
+            comparison_cache_hits,
+            comparison_cache_misses,
+            comparison_errors,
+        )
+
+    cfg.comparison_result = {
+        "enabled": comparison_enabled,
+        "reference_model_id": reference_model_id if comparison_enabled else None,
+        "pages_evaluated": comparison_pages_evaluated,
+        "mean_wer": mean_wer,
+        "cache_hits": comparison_cache_hits,
+        "cache_misses": comparison_cache_misses,
+        "errors": comparison_errors,
+    }
 
     full_text = "".join(parts)
     cfg.out_path.write_text(full_text, encoding="utf-8")
@@ -898,6 +1378,23 @@ def main() -> None:
     parser.add_argument("--extra-prompt", type=str, default="")
     parser.add_argument("--save-images", action="store_true")
     parser.add_argument("--images-dir", type=str, default=None)
+    parser.add_argument(
+        "--enable-model-comparison",
+        action="store_true",
+        help="Compute WER against a reference model output (cached on local filesystem).",
+    )
+    parser.add_argument(
+        "--reference-model-id",
+        type=str,
+        default=REFERENCE_MODEL_ID,
+        help="Reference model used for WER comparison.",
+    )
+    parser.add_argument(
+        "--comparison-cache-dir",
+        type=str,
+        default=MODEL_COMPARISON_CACHE_DIR,
+        help="Cache directory for per-page reference OCR outputs.",
+    )
 
     # blank detection
     parser.add_argument("--blank-white-threshold", type=int, default=245)
@@ -948,6 +1445,9 @@ def main() -> None:
         extra_prompt=args.extra_prompt,
         save_images=bool(args.save_images),
         images_dir=Path(args.images_dir) if args.images_dir else None,
+        enable_model_comparison=bool(args.enable_model_comparison),
+        reference_model_id=args.reference_model_id,
+        comparison_cache_dir=Path(args.comparison_cache_dir),
         blank_white_threshold=args.blank_white_threshold,
         blank_min_nonwhite_ratio=args.blank_min_nonwhite_ratio,
         blank_use_center_crop=not bool(args.no_center_crop),

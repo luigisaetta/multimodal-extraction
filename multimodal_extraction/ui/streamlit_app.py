@@ -38,7 +38,14 @@ import streamlit as st
 from streamlit_pdf_viewer import pdf_viewer
 
 from multimodal_extraction.pdf.classify_pdf import ClassifyConfig, classify_pdf
-from multimodal_extraction.config import COLLECTION_NAME, MODEL_IDS, DEBUG
+from multimodal_extraction.config import (
+    COLLECTION_NAME,
+    MODEL_IDS,
+    DEBUG,
+    ENABLE_MODEL_COMPARISON,
+    REFERENCE_MODEL_ID,
+    MODEL_COMPARISON_CACHE_DIR,
+)
 
 from multimodal_extraction.models.oci_models import get_embedding_model
 from multimodal_extraction.chunking.ocr_output_chunking_utils import (
@@ -123,6 +130,7 @@ def reset_outputs_for_new_upload() -> None:
     st.session_state["out_path"] = None
     st.session_state["chunks_count"] = None
     st.session_state["last_chunk_error"] = None
+    st.session_state["comparison_result"] = None
 
 
 def init_session_state() -> None:
@@ -139,6 +147,7 @@ def init_session_state() -> None:
         "db_check_msg": None,
         "collection_rows": None,
         "collection_load_msg": None,
+        "comparison_result": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -173,6 +182,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "image_format": "jpeg",
         "jpeg_quality": 85,
         "describe_figures": True,
+        "enable_model_comparison": bool(ENABLE_MODEL_COMPARISON),
         "out_path_str": "./out_ocr/output.txt",
         "save_images": False,
         "images_dir_str": "./out_ocr/images",
@@ -293,6 +303,15 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                 help=(
                     "Adds a second multimodal call per page to describe diagrams/drawings. "
                     "Tables are ignored."
+                ),
+            )
+            st.subheader("Model comparison")
+            ui["enable_model_comparison"] = st.checkbox(
+                "Enable WER comparison vs reference model",
+                value=bool(ENABLE_MODEL_COMPARISON),
+                help=(
+                    "If enabled, computes page-level WER against cached output from the "
+                    f"reference model configured in code ({REFERENCE_MODEL_ID})."
                 ),
             )
 
@@ -470,6 +489,32 @@ if nav_page == "OCR & Load":
                     )
 
             st.divider()
+            st.subheader("Model comparison (WER)")
+            comparison_result = st.session_state.get("comparison_result")
+            if comparison_result and comparison_result.get("enabled"):
+                mean_wer = comparison_result.get("mean_wer")
+                if mean_wer is None:
+                    st.info(
+                        "Comparison enabled but no WER available yet "
+                        f"(reference model: {comparison_result.get('reference_model_id')})."
+                    )
+                else:
+                    st.success(
+                        "Reference: "
+                        f"{comparison_result.get('reference_model_id')} | "
+                        f"Mean WER: {mean_wer:.4f} | "
+                        f"Pages: {comparison_result.get('pages_evaluated')} | "
+                        f"Cache hits: {comparison_result.get('cache_hits')} | "
+                        f"Cache misses: {comparison_result.get('cache_misses')} | "
+                        f"Errors: {comparison_result.get('errors')}"
+                    )
+            else:
+                st.caption(
+                    "Model comparison is disabled. Enable it in sidebar "
+                    "under Rendering & OCR Settings."
+                )
+
+            st.divider()
             st.subheader("Chunk/Load status")
             last_chunks_count = st.session_state.get("chunks_count")
             if last_chunks_count is not None:
@@ -563,6 +608,9 @@ if nav_page == "OCR & Load":
                 image_format=str(ui_state["image_format"]).lower(),
                 jpeg_quality=int(ui_state["jpeg_quality"]),
                 describe_figures=bool(ui_state["describe_figures"]),
+                enable_model_comparison=bool(ui_state["enable_model_comparison"]),
+                reference_model_id=REFERENCE_MODEL_ID,
+                comparison_cache_dir=Path(MODEL_COMPARISON_CACHE_DIR),
                 text_extraction_mode="auto",
                 input_pdf_type=st.session_state.get(
                     "pdf_type_label"
@@ -581,6 +629,7 @@ if nav_page == "OCR & Load":
             st.session_state["out_path"] = str(out_path)
             st.session_state["chunks_count"] = None
             st.session_state["last_chunk_error"] = None
+            st.session_state["comparison_result"] = ocr_cfg.comparison_result
 
             st.success(f"Done. Written to: {out_path}")
             st.rerun()

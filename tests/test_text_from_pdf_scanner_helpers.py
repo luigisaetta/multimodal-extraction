@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 scanner = pytest.importorskip("multimodal_extraction.ocr.text_from_pdf_scanner")
 
@@ -24,6 +25,100 @@ def test_resolve_text_mode_auto_from_pdf_type():
 def test_resolve_text_mode_explicit_override():
     assert scanner.resolve_text_mode(_cfg(text_extraction_mode="pypdf")) == "pypdf"
     assert scanner.resolve_text_mode(_cfg(text_extraction_mode="vlm")) == "vlm"
+
+
+def test_extract_candidate_text_pages_uses_docling_first(monkeypatch):
+    monkeypatch.setattr(
+        scanner,
+        "_extract_candidate_text_pages_docling_resilient",
+        lambda *args, **kwargs: ["docling-p1", "docling-p2"],
+    )
+    monkeypatch.setattr(
+        scanner,
+        "extract_text_pages_pypdf",
+        lambda *args, **kwargs: ["pypdf-p1", "pypdf-p2"],
+    )
+
+    out = scanner.extract_candidate_text_pages(
+        Path("/tmp/fake.pdf"),
+        effective_mode="pypdf",
+        selected_pages=[1, 2],
+        docling_enabled=True,
+        docling_timeout_sec=10,
+        docling_fallback_to_pypdf=True,
+    )
+    assert out == ["docling-p1", "docling-p2"]
+
+
+def test_extract_candidate_text_pages_fallback_to_pypdf_on_docling_error(monkeypatch):
+    def _raise_docling_resilient(*args, **kwargs):
+        raise TimeoutError("stuck")
+
+    monkeypatch.setattr(
+        scanner,
+        "_extract_candidate_text_pages_docling_resilient",
+        _raise_docling_resilient,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "extract_text_pages_pypdf",
+        lambda *args, **kwargs: ["pypdf-ok"],
+    )
+
+    out = scanner.extract_candidate_text_pages(
+        Path("/tmp/fake.pdf"),
+        effective_mode="auto",
+        selected_pages=[1],
+        docling_enabled=True,
+        docling_timeout_sec=1,
+        docling_fallback_to_pypdf=True,
+    )
+    assert out == ["pypdf-ok"]
+
+
+def test_extract_candidate_text_pages_raises_when_no_fallback(monkeypatch):
+    monkeypatch.setattr(
+        scanner,
+        "_extract_candidate_text_pages_docling_resilient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("docling failed")),
+    )
+
+    with pytest.raises(RuntimeError):
+        scanner.extract_candidate_text_pages(
+            Path("/tmp/fake.pdf"),
+            effective_mode="pypdf",
+            selected_pages=[1],
+            docling_enabled=True,
+            docling_timeout_sec=1,
+            docling_fallback_to_pypdf=False,
+        )
+
+
+def test_docling_resilient_splits_and_fallbacks_only_failing_page(monkeypatch):
+    def _fake_docling_for_pages(*, pdf_path, page_numbers, timeout_sec):
+        if page_numbers == [1, 2, 3, 4]:
+            raise RuntimeError("chunk failed")
+        if page_numbers == [1, 2]:
+            return ["d1", "d2"]
+        if page_numbers == [3, 4]:
+            raise RuntimeError("right chunk failed")
+        if page_numbers == [3]:
+            raise RuntimeError("single failed")
+        if page_numbers == [4]:
+            return ["d4"]
+        raise AssertionError(f"Unexpected segment: {page_numbers}")
+
+    monkeypatch.setattr(scanner, "_extract_docling_for_page_numbers", _fake_docling_for_pages)
+    monkeypatch.setattr(scanner, "extract_text_single_page_pypdf", lambda *args, **kwargs: "p3")
+
+    out = scanner._extract_candidate_text_pages_docling_resilient(
+        Path("/tmp/fake.pdf"),
+        selected_pages=[1, 2, 3, 4],
+        docling_timeout_sec=10,
+        docling_fallback_to_pypdf=True,
+        docling_max_chunk_pages=10,
+    )
+    assert out == ["d1", "d2", "p3", "d4"]
 
 
 def test_page_has_enough_text_counts_non_whitespace():
@@ -128,6 +223,18 @@ def test_process_page_with_strategy_vlm_requires_llm_and_image():
             cfg=cfg,
             need_llm=True,
         )
+
+
+def test_pil_to_data_url_jpeg_prefix():
+    img = Image.new("RGB", (20, 20), color="white")
+    data_url = scanner.pil_to_data_url(img, image_format="jpeg", quality=80)
+    assert data_url.startswith("data:image/jpeg;base64,")
+
+
+def test_pil_to_data_url_png_prefix():
+    img = Image.new("RGB", (20, 20), color="white")
+    data_url = scanner.pil_to_data_url(img, image_format="png")
+    assert data_url.startswith("data:image/png;base64,")
 
 
 def test_resolve_selected_pages_default_full_document():

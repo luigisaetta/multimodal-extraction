@@ -35,7 +35,7 @@ from multimodal_extraction.ocr.text_from_pdf_scanner import (
     extract_text_single_page_docling,
 )
 from multimodal_extraction.utils import get_console_logger
-from multimodal_extraction.config import DOCKLING_ENABLED
+from multimodal_extraction.config import DOCLING_ENABLED
 
 logger = get_console_logger()
 
@@ -124,7 +124,7 @@ def extract_single_page(pdf_path: Path, cfg: SinglePageConfig) -> str:
     # Try local text extraction if mode allows
     candidate_text = ""
     if effective_mode in ("pypdf", "auto"):
-        if DOCKLING_ENABLED:
+        if DOCLING_ENABLED:
             logger.info("Extracting page text via Docling...")
             candidate_text = extract_text_single_page_docling(pdf_path, cfg.page)
         else:

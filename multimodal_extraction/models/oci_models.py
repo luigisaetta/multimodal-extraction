@@ -62,16 +62,21 @@ def get_llm(model_id=DEFAULT_MODEL_ID, temperature=TEMPERATURE, max_tokens=MAX_T
     # identify the provider
     provider = get_model_provider(model_id)
 
+    # (14/02/2026): added seed to increase reproducibility
+    SEED = 42
+
     if provider == "openai":
         _model_kwargs = {
             "temperature": temperature,
             "max_completion_tokens": max_tokens,
+            "seed": SEED
         }
     elif provider == "google":
         # fix for Gemini truncating outputs if using "max_tokens"
         _model_kwargs = {
             "temperature": temperature,
             "max_tokens": MAX_OUTPUT_TOKENS,
+            "seed": SEED
         }
     else:
         # Cohere

@@ -21,15 +21,24 @@ AUTH = "API_KEY"
 DEFAULT_MODEL_ID = "google.gemini-2.5-pro"
 TEMPERATURE = 0.0
 MAX_TOKENS = 4000
+DEFAULT_SEED = 42
 # for Gemini
 MAX_OUTPUT_TOKENS = 32000
 
 # embeddings
 EMBED_MODEL_ID = "cohere.embed-v4.0"
 
-# REGION = "eu-frankfurt-1"
-REGION = "us-chicago-1"
+# this one for LLM
+REGION = "eu-frankfurt-1"
+# REGION = "us-chicago-1"
 SERVICE_ENDPOINT = f"https://inference.generativeai.{REGION}.oci.oraclecloud.com"
+
+# Dedicated endpoint for embedding models (can differ from LLM region/endpoint)
+EMBED_REGION = "us-chicago-1"
+
+EMBED_SERVICE_ENDPOINT = (
+    f"https://inference.generativeai.{EMBED_REGION}.oci.oraclecloud.com"
+)
 
 # list  of models available to the app
 # you can choose the one you prefer in the app UI
@@ -45,7 +54,6 @@ if REGION == "us-chicago-1":
         "google.gemini-2.5-pro",
         "google.gemini-2.5-flash",
         "xai.grok-4-1-fast-non-reasoning",
-        "cohere.command-a-vision",
         # add others you support via get_llm(...)
     ]
 else:

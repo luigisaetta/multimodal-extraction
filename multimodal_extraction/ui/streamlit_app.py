@@ -150,6 +150,11 @@ def init_session_state() -> None:
         "collection_rows": None,
         "collection_load_msg": None,
         "collection_rows_for": None,
+        "collection_create_ok": None,
+        "collection_create_msg": None,
+        "drop_confirm_name": "",
+        "collection_drop_ok": None,
+        "collection_drop_msg": None,
         "comparison_result": None,
     }
     for key, val in defaults.items():
@@ -198,6 +203,9 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "check_db_btn": False,
         "show_docs_btn": False,
         "selected_collection": None,
+        "new_collection_name": "",
+        "create_collection_btn": False,
+        "drop_collection_btn": False,
         "check_image_payload_btn": False,
     }
 
@@ -398,6 +406,48 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         elif st.session_state["db_check_ok"] is False:
             st.error(st.session_state["db_check_msg"])
 
+        st.divider()
+        st.subheader("Create new collection")
+        ui["new_collection_name"] = st.text_input(
+            "New collection name",
+            value=st.session_state.get("new_collection_name", ""),
+            help="Oracle identifier, e.g. COLL02",
+        )
+        st.session_state["new_collection_name"] = ui["new_collection_name"]
+        ui["create_collection_btn"] = st.button(
+            "Create empty collection",
+            type="secondary",
+            use_container_width=True,
+            help=(
+                "Creates a new OracleVS collection table with a temporary "
+                "bootstrap row, then deletes it."
+            ),
+        )
+
+        if ui["create_collection_btn"]:
+            try:
+                with get_db_connection() as conn:
+                    created_name = OracleVSAdmin.create_empty_collection(
+                        connection=conn,
+                        collection_name=ui["new_collection_name"],
+                        embedding=get_embedding_model(),
+                    )
+                st.session_state["collection_create_ok"] = True
+                st.session_state["collection_create_msg"] = (
+                    f"Collection created: {created_name}"
+                )
+                st.session_state["selected_collection"] = created_name
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                st.session_state["collection_create_ok"] = False
+                st.session_state["collection_create_msg"] = (
+                    f"Create failed: {type(exc).__name__}: {exc}"
+                )
+
+        if st.session_state.get("collection_create_ok") is True:
+            st.success(st.session_state.get("collection_create_msg", ""))
+        elif st.session_state.get("collection_create_ok") is False:
+            st.error(st.session_state.get("collection_create_msg", ""))
+
         available_cols: list[str] = []
         if st.session_state["db_check_ok"] is True:
             try:
@@ -446,6 +496,62 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                         f"Load failed for {ui['selected_collection']}: "
                         f"{type(exc).__name__}: {exc}"
                     )
+
+            st.divider()
+            st.subheader("Danger zone")
+            st.caption(
+                "Drop deletes the whole selected collection table and all chunks."
+            )
+            st.session_state["drop_confirm_name"] = st.text_input(
+                "Type selected collection name to confirm drop",
+                value=st.session_state.get("drop_confirm_name", ""),
+            )
+            ui["drop_collection_btn"] = st.button(
+                "Drop selected collection",
+                type="secondary",
+                use_container_width=True,
+            )
+            if ui["drop_collection_btn"]:
+                selected_for_drop = ui["selected_collection"]
+                confirm_name = (
+                    st.session_state.get("drop_confirm_name", "").strip().upper()
+                )
+                if confirm_name != selected_for_drop:
+                    st.session_state["collection_drop_ok"] = False
+                    st.session_state["collection_drop_msg"] = (
+                        "Drop blocked: confirmation text does not match "
+                        "the selected collection."
+                    )
+                else:
+                    try:
+                        with get_db_connection() as conn:
+                            OracleVSAdmin.drop_collection(conn, selected_for_drop)
+                            refreshed = OracleVSAdmin.list_collections(conn)
+
+                        st.session_state["collection_drop_ok"] = True
+                        st.session_state["collection_drop_msg"] = (
+                            f"Collection dropped: {selected_for_drop}"
+                        )
+                        st.session_state["available_collections"] = refreshed
+                        st.session_state["drop_confirm_name"] = ""
+                        st.session_state["collection_rows"] = None
+                        st.session_state["collection_rows_for"] = None
+                        st.session_state["collection_load_msg"] = None
+                        if refreshed:
+                            st.session_state["selected_collection"] = refreshed[0]
+                        else:
+                            st.session_state["selected_collection"] = COLLECTION_NAME
+                        st.rerun()
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        st.session_state["collection_drop_ok"] = False
+                        st.session_state["collection_drop_msg"] = (
+                            f"Drop failed: {type(exc).__name__}: {exc}"
+                        )
+
+            if st.session_state.get("collection_drop_ok") is True:
+                st.success(st.session_state.get("collection_drop_msg", ""))
+            elif st.session_state.get("collection_drop_ok") is False:
+                st.error(st.session_state.get("collection_drop_msg", ""))
         elif st.session_state["db_check_ok"] is True:
             st.info("No vector collections found in current schema.")
 

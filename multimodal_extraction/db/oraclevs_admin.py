@@ -20,11 +20,13 @@ from collections import Counter
 from typing import Any, Dict, List, Sequence
 
 from oracledb import Connection, DB_TYPE_VECTOR
+from langchain_core.documents import Document
+from langchain_community.vectorstores.utils import DistanceStrategy
 
 # moved to LangChain 1.x compatibility
 from langchain_oracledb import OracleVS
 
-from multimodal_extraction.config import DEBUG
+from multimodal_extraction.config import DEBUG, EMBED_MODEL_ID
 from multimodal_extraction.utils import get_console_logger
 
 logger = get_console_logger()
@@ -44,6 +46,11 @@ def _safe_ident(name: str) -> str:
     if not _VALID_IDENT.fullmatch(ident):
         raise ValueError(f"Invalid Oracle identifier: {name!r}")
     return ident
+
+
+def _escape_sql_string_literal(value: str) -> str:
+    """Escape a Python string for use as a single-quoted Oracle SQL literal."""
+    return value.replace("'", "''")
 
 
 class OracleVSAdmin(OracleVS):
@@ -202,3 +209,60 @@ class OracleVSAdmin(OracleVS):
             cur.execute(sql)
 
         connection.commit()
+
+    @classmethod
+    def annotate_collection_table(
+        cls,
+        connection: Connection,
+        table_name: str,
+        embedding_model: str = EMBED_MODEL_ID,
+    ) -> None:
+        """
+        Annotate an Oracle table with collection metadata.
+        """
+        safe_table = _safe_ident(table_name)
+        comment = f"RAG collection metadata: embedding_model={embedding_model}"
+        comment_sql = _escape_sql_string_literal(comment)
+        sql = f"COMMENT ON TABLE {safe_table} IS '{comment_sql}'"
+
+        with connection.cursor() as cur:
+            cur.execute(sql)
+        connection.commit()
+
+    @classmethod
+    def create_empty_collection(
+        cls,
+        connection: Connection,
+        collection_name: str,
+        embedding: Any,
+        embedding_model: str = EMBED_MODEL_ID,
+    ) -> str:
+        """
+        Create a new empty collection table using a temporary bootstrap row.
+
+        Notes:
+          - Uses OracleVS schema creation path via from_documents(...)
+          - Deletes the bootstrap row immediately after table creation
+        """
+        safe_name = _safe_ident(collection_name)
+        existing = cls.list_collections(connection)
+        if safe_name in existing:
+            raise ValueError(f"Collection already exists: {safe_name}")
+
+        bootstrap_source = "__bootstrap__"
+        bootstrap_doc = Document(
+            page_content="bootstrap row used for collection creation",
+            metadata={"source": bootstrap_source, "page": 0},
+        )
+
+        cls.from_documents(
+            client=connection,
+            documents=[bootstrap_doc],
+            embedding=embedding,
+            table_name=safe_name,
+            distance_strategy=DistanceStrategy.COSINE,
+        )
+        cls.delete_documents(connection, safe_name, [bootstrap_source])
+        cls.annotate_collection_table(connection, safe_name, embedding_model)
+
+        return safe_name

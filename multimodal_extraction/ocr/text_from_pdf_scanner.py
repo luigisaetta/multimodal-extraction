@@ -43,7 +43,11 @@ from pypdf import PdfReader, PdfWriter
 from langchain_core.messages import HumanMessage
 
 from multimodal_extraction.models.oci_models import get_llm
-from multimodal_extraction.prompts.prompts import build_ocr_text_prompt, build_figures_prompt
+from multimodal_extraction.prompts.prompts import (
+    build_ocr_text_prompt,
+    build_figures_prompt,
+    build_complex_table_detection_prompt,
+)
 from multimodal_extraction.ocr.docling_post_processing import cleanup_docling_text_keep_captions
 from multimodal_extraction.utils import get_console_logger
 from multimodal_extraction.config import (
@@ -55,6 +59,7 @@ from multimodal_extraction.config import (
     ENABLE_MODEL_COMPARISON,
     REFERENCE_MODEL_ID,
     MODEL_COMPARISON_CACHE_DIR,
+    ENABLE_COMPLEX_TABLE_DETECTION,
 )
 
 logger = get_console_logger()
@@ -856,6 +861,96 @@ def call_multimodal_llm_figures_only(
         return None
 
     return str(getattr(res, "content", res)).strip()
+
+
+def call_multimodal_llm_complex_table_only(
+    llm,
+    page_img: Image.Image,
+    max_side: int,
+    jpeg_quality: int,
+    image_format: ImageFormat = "jpeg",
+) -> Optional[bool]:
+    """
+    Return True if the page contains a complex table, False otherwise.
+    Returns None only on call failure.
+    """
+    data_url = pil_to_data_url(
+        page_img,
+        max_side=max_side,
+        quality=jpeg_quality,
+        image_format=image_format,
+    )
+    prompt_text = build_complex_table_detection_prompt()
+
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+    )
+
+    started = time.perf_counter()
+    try:
+        res = llm.invoke([msg])
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        elapsed = time.perf_counter() - started
+        logger.error("Error checking complex table presence: %s", exc)
+        logger.error("Complex table check failed after %.2fs", elapsed)
+        return None
+
+    elapsed = time.perf_counter() - started
+    raw = str(getattr(res, "content", res)).strip()
+    normalized = raw.upper()
+    if normalized.startswith("YES"):
+        decision = True
+    elif normalized.startswith("NO"):
+        decision = False
+    else:
+        logger.warning(
+            "Unexpected complex table classifier output: %r. Falling back to NO.",
+            raw,
+        )
+        decision = False
+
+    logger.info(
+        "Complex table check completed in %.2fs | result=%s",
+        elapsed,
+        "YES" if decision else "NO",
+    )
+    return decision
+
+
+def page_contains_complex_table(
+    pdf_path: Path,
+    *,
+    page_1based: int,
+    model_id: str,
+    dpi: int = 200,
+    max_side: int = 1600,
+    jpeg_quality: int = 85,
+    image_format: ImageFormat = "jpeg",
+    enabled: bool = ENABLE_COMPLEX_TABLE_DETECTION,
+) -> bool:
+    """
+    Check if a single PDF page contains a complex table using the selected VLM.
+    """
+    if not enabled:
+        logger.info("Complex table detection disabled by config/flag.")
+        return False
+
+    page_img = render_single_page(pdf_path, page_1based=page_1based, dpi=dpi)
+
+    llm = get_llm(model_id=model_id)
+    result = call_multimodal_llm_complex_table_only(
+        llm,
+        page_img,
+        max_side=max_side,
+        jpeg_quality=jpeg_quality,
+        image_format=image_format,
+    )
+    if result is None:
+        raise RuntimeError("Complex table detection call returned no content.")
+    return result
 
 
 def append_figures_block(page_text: str, figures_text: str) -> str:

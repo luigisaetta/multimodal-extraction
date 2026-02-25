@@ -104,3 +104,30 @@ def build_figures_prompt() -> str:
         "- Keep each description compact but informative.\n"
         "- Do NOT add any introductory or concluding text.\n"
     )
+
+
+def build_complex_table_detection_prompt() -> str:
+    """
+    Build a strict binary prompt to detect whether a page contains a complex table.
+    """
+    return (
+        "You are analyzing a single document page image.\n"
+        "Decide ONLY whether the page contains at least one COMPLEX TABLE.\n"
+        "\n"
+        "Definition of COMPLEX TABLE:\n"
+        "- A table with merged cells and/or multi-level headers.\n"
+        "- Or a table with many columns/rows where structure is dense and non-trivial.\n"
+        "- Or a table with nested sections/subtables, grouped headers, or matrix-like layout.\n"
+        "\n"
+        "Do NOT mark as complex:\n"
+        "- Simple key-value lists.\n"
+        "- Simple 2-3 column tables with flat single header and straightforward rows.\n"
+        "- Plain paragraph text aligned in columns without clear table structure.\n"
+        "\n"
+        "Output format (STRICT):\n"
+        "- Return exactly YES or NO.\n"
+        "- No punctuation, no JSON, no explanation.\n"
+        "\n"
+        "Decision rule:\n"
+        "- Be conservative. If uncertain, return NO.\n"
+    )

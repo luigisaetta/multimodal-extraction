@@ -78,6 +78,9 @@ ENABLE_MODEL_COMPARISON = False
 REFERENCE_MODEL_ID = "openai.gpt-5.2"
 MODEL_COMPARISON_CACHE_DIR = "./outputs/model_comparison_cache"
 
+# Complex table detection (for optional special processing path)
+ENABLE_COMPLEX_TABLE_DETECTION = False
+
 # Chunking parameters, you can change from UI
 CHUNK_SIZE = 2048
 CHUNK_OVERLAP = 100

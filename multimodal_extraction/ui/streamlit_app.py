@@ -182,6 +182,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "image_format": "jpeg",
         "jpeg_quality": 85,
         "describe_figures": True,
+        "force_vlm": False,
         "enable_model_comparison": bool(ENABLE_MODEL_COMPARISON),
         "out_path_str": "./out_ocr/output.txt",
         "save_images": False,
@@ -303,6 +304,15 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                 help=(
                     "Adds a second multimodal call per page to describe diagrams/drawings. "
                     "Tables are ignored."
+                ),
+            )
+            st.subheader("Text extraction strategy")
+            ui["force_vlm"] = st.checkbox(
+                "Force VLM OCR (ignore PDF classification)",
+                value=False,
+                help=(
+                    "If enabled, always uses multimodal OCR. "
+                    "If disabled, mode is chosen from classification."
                 ),
             )
             st.subheader("Model comparison")
@@ -482,6 +492,8 @@ if nav_page == "OCR & Load":
             stored_type_label = st.session_state.get("pdf_type_label") or ""
             if stored_type_label:
                 type_badge(stored_type_label)
+                if ui_state["force_vlm"]:
+                    st.warning("Text extraction override active: forcing VLM OCR.")
                 with st.expander("Details (why?)", expanded=False):
                     st.code(
                         st.session_state.get("pdf_type_reason") or "-",
@@ -611,9 +623,11 @@ if nav_page == "OCR & Load":
                 enable_model_comparison=bool(ui_state["enable_model_comparison"]),
                 reference_model_id=REFERENCE_MODEL_ID,
                 comparison_cache_dir=Path(MODEL_COMPARISON_CACHE_DIR),
-                text_extraction_mode="auto",
-                input_pdf_type=st.session_state.get(
-                    "pdf_type_label"
+                text_extraction_mode="vlm" if ui_state["force_vlm"] else "auto",
+                input_pdf_type=(
+                    None
+                    if ui_state["force_vlm"]
+                    else st.session_state.get("pdf_type_label")
                 ),  # TEXT_PDF / SCANNED_PDF / MIXED_OR_UNKNOWN
                 min_text_chars_page=50,
             )

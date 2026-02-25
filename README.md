@@ -113,6 +113,19 @@ python -m multimodal_extraction.ocr.text_from_pdf_scanner ./data/pdfs/doc1.pdf \
 python -m scripts.ingest.extract_one_page ./data/pdfs/doc1.pdf 19 --model-id openai.gpt-5.2
 ```
 
+### Extract PNG pages for all PDFs in a folder
+
+```bash
+python -m scripts.ingest.extract_pdf_pages_to_png \
+  --input-dir ./data/pdfs \
+  --base-dir ./outputs/pages_png \
+  --dpi 200
+```
+
+Output layout example:
+- `./outputs/pages_png/doc1/page0001.png`
+- `./outputs/pages_png/doc1/page0002.png`
+
 ### First load into a NEW collection
 
 ```bash

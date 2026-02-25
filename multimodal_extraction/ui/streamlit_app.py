@@ -145,8 +145,11 @@ def init_session_state() -> None:
         "uploaded_file_key": None,
         "db_check_ok": None,
         "db_check_msg": None,
+        "available_collections": [],
+        "selected_collection": COLLECTION_NAME,
         "collection_rows": None,
         "collection_load_msg": None,
+        "collection_rows_for": None,
         "comparison_result": None,
     }
     for key, val in defaults.items():
@@ -193,6 +196,8 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "add_chunk_header": True,
         "chunk_load_btn": False,
         "check_db_btn": False,
+        "show_docs_btn": False,
+        "selected_collection": None,
         "check_image_payload_btn": False,
     }
 
@@ -359,9 +364,17 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         # second page: DB connection and data inspector
         st.header("DB Connection")
         conn_params = get_connection_params()
+        default_collection = conn_params.get("COLLECTION_NAME", COLLECTION_NAME)
+        conn_params_to_show = {
+            "DB_USER": conn_params.get("DB_USER"),
+            "DB_PASSWORD": conn_params.get("DB_PASSWORD"),
+            "DB_DSN": conn_params.get("DB_DSN"),
+            "DB_WALLET_DIR": conn_params.get("DB_WALLET_DIR"),
+            "DEFAULT_COLLECTION": default_collection,
+        }
         st.caption("Connection parameters:")
         st.code(
-            "\n".join([f"{k} = {v}" for k, v in conn_params.items()]),
+            "\n".join([f"{k} = {v}" for k, v in conn_params_to_show.items()]),
             language="text",
         )
 
@@ -380,32 +393,61 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             st.session_state["db_check_ok"] = check_ok
             st.session_state["db_check_msg"] = check_msg
 
-            # Reset previous loaded data each time we re-check
-            st.session_state["collection_rows"] = None
-            st.session_state["collection_load_msg"] = None
-
-            # If DB ok, load documents list now (only on button press)
-            if check_ok:
-                try:
-                    with get_db_connection() as conn:
-                        rows_loaded = OracleVSAdmin.list_documents_with_chunk_counts(
-                            conn,
-                            COLLECTION_NAME,
-                        )
-                    st.session_state["collection_rows"] = rows_loaded
-                    st.session_state["collection_load_msg"] = (
-                        f"Loaded {len(rows_loaded)} documents from collection."
-                    )
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    st.session_state["collection_rows"] = []
-                    st.session_state["collection_load_msg"] = (
-                        f"Load failed: {type(exc).__name__}: {exc}"
-                    )
-
         if st.session_state["db_check_ok"] is True:
             st.success(st.session_state["db_check_msg"])
         elif st.session_state["db_check_ok"] is False:
             st.error(st.session_state["db_check_msg"])
+
+        available_cols: list[str] = []
+        if st.session_state["db_check_ok"] is True:
+            try:
+                with get_db_connection() as conn:
+                    available_cols = OracleVSAdmin.list_collections(conn)
+                st.session_state["available_collections"] = available_cols
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                st.session_state["available_collections"] = []
+                st.error(f"Cannot load collections: {type(exc).__name__}: {exc}")
+        else:
+            st.session_state["available_collections"] = []
+
+        selected_collection = st.session_state.get("selected_collection", COLLECTION_NAME)
+        if available_cols:
+            if selected_collection not in available_cols:
+                selected_collection = available_cols[0]
+            ui["selected_collection"] = st.selectbox(
+                "Collection",
+                options=available_cols,
+                index=available_cols.index(selected_collection),
+                help="Choose the collection to inspect.",
+            )
+            st.session_state["selected_collection"] = ui["selected_collection"]
+            ui["show_docs_btn"] = st.button(
+                "Show documents",
+                type="secondary",
+                use_container_width=True,
+            )
+
+            if ui["show_docs_btn"]:
+                try:
+                    with get_db_connection() as conn:
+                        rows_loaded = OracleVSAdmin.list_documents_with_chunk_counts(
+                            conn, ui["selected_collection"]
+                        )
+                    st.session_state["collection_rows"] = rows_loaded
+                    st.session_state["collection_rows_for"] = ui["selected_collection"]
+                    st.session_state["collection_load_msg"] = (
+                        f"Loaded {len(rows_loaded)} documents from collection "
+                        f"{ui['selected_collection']}."
+                    )
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    st.session_state["collection_rows"] = []
+                    st.session_state["collection_rows_for"] = ui["selected_collection"]
+                    st.session_state["collection_load_msg"] = (
+                        f"Load failed for {ui['selected_collection']}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        elif st.session_state["db_check_ok"] is True:
+            st.info("No vector collections found in current schema.")
 
     return ui
 
@@ -694,7 +736,10 @@ else:
         st.subheader("DB / Collection status")
 
         inspector_params = get_connection_params()
-        st.write(f"**Collection:** `{inspector_params['COLLECTION_NAME']}`")
+        st.write(f"**Default collection:** `{inspector_params['COLLECTION_NAME']}`")
+        selected_collection = st.session_state.get("selected_collection")
+        if selected_collection:
+            st.write(f"**Selected collection:** `{selected_collection}`")
 
         db_check_ok = st.session_state.get("db_check_ok", None)
         if db_check_ok is True:
@@ -708,7 +753,11 @@ else:
         st.caption("Tip: if this fails, verify DSN / wallet / network ACLs.")
 
     with right:
-        st.subheader(f"Documents in collection: {COLLECTION_NAME}")
+        shown_collection = st.session_state.get("collection_rows_for")
+        if shown_collection:
+            st.subheader(f"Documents in collection: {shown_collection}")
+        else:
+            st.subheader("Documents in collection")
 
         db_ok = st.session_state.get("db_check_ok", None)
         if db_ok is not True:
@@ -723,10 +772,7 @@ else:
         collection_rows = st.session_state.get("collection_rows")
 
         if collection_rows is None:
-            st.info(
-                "Connection OK, but documents not loaded yet. "
-                "Push again **Check DB connection** to load."
-            )
+            st.info("Choose a collection in the sidebar, then push **Show documents**.")
             st.stop()
 
         if not collection_rows:

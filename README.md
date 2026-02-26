@@ -81,7 +81,7 @@ pip install pytest pytest-cov
 ### Run the Streamlit UI
 
 ```bash
-./start_ocr_ui.sh
+./start_ingestion_ui.sh
 ```
 
 Alternative:

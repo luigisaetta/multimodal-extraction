@@ -70,3 +70,24 @@ def test_ocr_output_file_to_chunks_fallback_to_output_filename(tmp_path: Path):
     chunks = ocr_output_file_to_chunks(p, source_name=None, add_header=False)
     assert len(chunks) == 1
     assert chunks[0].source_name == "output.txt"
+
+
+def test_ocr_output_text_to_chunks_size_based_mode_splits_page_text():
+    text = (
+        "==================== BEGIN TEXT ====================\n\n"
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa\n"
+        "--- PAGE 1 ---\n\n"
+        "===================== END TEXT =====================\n"
+    )
+    chunks = ocr_output_text_to_chunks(
+        text,
+        source_name="b.pdf",
+        max_chunk_size=18,
+        overlap=4,
+        chunk_by_page=False,
+        add_header=False,
+    )
+
+    assert len(chunks) >= 2
+    assert all(ch.page_label == "1" for ch in chunks)
+    assert all(ch.metadata["source"] == "b.pdf" for ch in chunks)

@@ -92,7 +92,7 @@ def classify_uploaded_pdf(tmp_pdf_path_str: str) -> tuple[str, str]:
     return detected_label, (detected_reason or "")
 
 
-def oracle_vector_store_load(langchain_docs: list[Any]) -> None:
+def oracle_vector_store_load(langchain_docs: list[Any], collection_name: str) -> None:
     """
     Load chunks into Oracle Vector Store.
 
@@ -108,7 +108,7 @@ def oracle_vector_store_load(langchain_docs: list[Any]) -> None:
 
         oracle_vs = OracleVSAdmin(
             client=_conn,
-            table_name=COLLECTION_NAME,
+            table_name=collection_name,
             embedding_function=get_embedding_model(),
         )
 
@@ -147,6 +147,7 @@ def init_session_state() -> None:
         "db_check_msg": None,
         "available_collections": [],
         "selected_collection": COLLECTION_NAME,
+        "ocr_target_collection": COLLECTION_NAME,
         "collection_rows": None,
         "collection_load_msg": None,
         "collection_rows_for": None,
@@ -155,6 +156,12 @@ def init_session_state() -> None:
         "drop_confirm_name": "",
         "collection_drop_ok": None,
         "collection_drop_msg": None,
+        "viewer_collection": COLLECTION_NAME,
+        "viewer_document": "",
+        "viewer_rows": None,
+        "viewer_load_msg": None,
+        "viewer_rows_for_collection": None,
+        "viewer_rows_for_document": None,
         "comparison_result": None,
     }
     for key, val in defaults.items():
@@ -196,6 +203,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "save_images": False,
         "images_dir_str": "./out_ocr/images",
         "run_btn": False,
+        "chunk_by_page": True,
         "chunk_size": 2048,
         "chunk_overlap": 100,
         "add_chunk_header": True,
@@ -203,10 +211,14 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "check_db_btn": False,
         "show_docs_btn": False,
         "selected_collection": None,
+        "ocr_target_collection": None,
         "new_collection_name": "",
         "create_collection_btn": False,
         "drop_collection_btn": False,
         "check_image_payload_btn": False,
+        "viewer_collection": None,
+        "viewer_document": "",
+        "load_document_btn": False,
     }
 
     if current_page == "OCR & Load":
@@ -298,7 +310,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             ui["check_image_payload_btn"] = st.button(
                 "Check image payload settings",
                 type="secondary",
-                use_container_width=True,
+                width="stretch",
             )
             if ui["check_image_payload_btn"]:
                 if ui["image_format"] == "jpeg":
@@ -347,28 +359,75 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             "Images dir (optional)", value="./out_ocr/images"
         )
 
-        ui["run_btn"] = st.button("Run OCR", type="primary", use_container_width=True)
+        ui["run_btn"] = st.button("Run OCR", type="primary", width="stretch")
 
         st.divider()
 
         st.header("Chunk & Load (OCR text)")
-        ui["chunk_size"] = st.slider("Chunk size (chars)", 600, 3000, 2048, 100)
-        ui["chunk_overlap"] = st.slider("Chunk overlap (chars)", 0, 600, 100, 20)
+        ui["chunk_by_page"] = st.checkbox(
+            "Chunk by page (default)",
+            value=True,
+            help=(
+                "Recommended mode: one chunk per page. "
+                "Disable to use size-based chunking."
+            ),
+        )
+        ui["chunk_size"] = st.slider(
+            "Chunk size (chars)",
+            600,
+            3000,
+            2048,
+            100,
+            disabled=bool(ui["chunk_by_page"]),
+        )
+        ui["chunk_overlap"] = st.slider(
+            "Chunk overlap (chars)",
+            0,
+            600,
+            100,
+            20,
+            disabled=bool(ui["chunk_by_page"]),
+        )
+        if ui["chunk_by_page"]:
+            st.caption("Page mode active: size/overlap controls are disabled.")
         ui["add_chunk_header"] = st.checkbox(
             "Add chunk header (source/page)", value=True
         )
+        ocr_collections = []
+        try:
+            with get_db_connection() as conn:
+                ocr_collections = OracleVSAdmin.list_collections(conn)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            st.caption(f"Cannot load collections for dropdown: {type(exc).__name__}: {exc}")
+
+        current_ocr_target = st.session_state.get("ocr_target_collection", COLLECTION_NAME)
+        if ocr_collections:
+            if current_ocr_target not in ocr_collections:
+                current_ocr_target = ocr_collections[0]
+            ui["ocr_target_collection"] = st.selectbox(
+                "Target collection",
+                options=ocr_collections,
+                index=ocr_collections.index(current_ocr_target),
+                help="Collection where chunks will be loaded.",
+            )
+            st.session_state["ocr_target_collection"] = ui["ocr_target_collection"]
+        else:
+            st.warning(
+                "No collections available. Create one in DB / Collection Inspector first."
+            )
+            st.session_state["ocr_target_collection"] = current_ocr_target
 
         ui["chunk_load_btn"] = st.button(
             "Chunk & Load to Vector Store",
             type="secondary",
-            use_container_width=True,
+            width="stretch",
             help=(
                 "Chunks the current OCR output text (shown on the right) "
                 "and calls your Vector Store loader."
             ),
         )
 
-    else:
+    elif current_page == "DB / Collection Inspector":
         # second page: DB connection and data inspector
         st.header("DB Connection")
         conn_params = get_connection_params()
@@ -392,7 +451,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         ui["check_db_btn"] = st.button(
             "Check DB connection",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             help="Tries to open a DB connection and run a simple SELECT.",
         )
 
@@ -417,7 +476,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         ui["create_collection_btn"] = st.button(
             "Create empty collection",
             type="secondary",
-            use_container_width=True,
+            width="stretch",
             help=(
                 "Creates a new OracleVS collection table with a temporary "
                 "bootstrap row, then deletes it."
@@ -474,7 +533,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             ui["show_docs_btn"] = st.button(
                 "Show documents",
                 type="secondary",
-                use_container_width=True,
+                width="stretch",
             )
 
             if ui["show_docs_btn"]:
@@ -509,7 +568,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
             ui["drop_collection_btn"] = st.button(
                 "Drop selected collection",
                 type="secondary",
-                use_container_width=True,
+                width="stretch",
             )
             if ui["drop_collection_btn"]:
                 selected_for_drop = ui["selected_collection"]
@@ -554,6 +613,65 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                 st.error(st.session_state.get("collection_drop_msg", ""))
         elif st.session_state["db_check_ok"] is True:
             st.info("No vector collections found in current schema.")
+    else:
+        # third page: document viewer
+        st.header("Document Viewer")
+
+        viewer_collections: list[str] = []
+        try:
+            with get_db_connection() as conn:
+                viewer_collections = OracleVSAdmin.list_collections(conn)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            st.error(f"Cannot load collections: {type(exc).__name__}: {exc}")
+
+        if not viewer_collections:
+            st.info("No vector collections found in current schema.")
+            return ui
+
+        current_viewer_collection = st.session_state.get(
+            "viewer_collection", COLLECTION_NAME
+        )
+        if current_viewer_collection not in viewer_collections:
+            current_viewer_collection = viewer_collections[0]
+
+        ui["viewer_collection"] = st.selectbox(
+            "Collection",
+            options=viewer_collections,
+            index=viewer_collections.index(current_viewer_collection),
+            help="Choose the collection containing the document.",
+        )
+        st.session_state["viewer_collection"] = ui["viewer_collection"]
+
+        viewer_documents: list[str] = []
+        try:
+            with get_db_connection() as conn:
+                viewer_documents = OracleVSAdmin.list_documents_in_collection(
+                    conn, ui["viewer_collection"]
+                )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            st.error(f"Cannot load documents: {type(exc).__name__}: {exc}")
+
+        if not viewer_documents:
+            st.info("No documents found in selected collection.")
+            return ui
+
+        current_viewer_document = st.session_state.get("viewer_document", "")
+        if current_viewer_document not in viewer_documents:
+            current_viewer_document = viewer_documents[0]
+
+        ui["viewer_document"] = st.selectbox(
+            "Document",
+            options=viewer_documents,
+            index=viewer_documents.index(current_viewer_document),
+            help="Choose the document source (METADATA.source).",
+        )
+        st.session_state["viewer_document"] = ui["viewer_document"]
+
+        ui["load_document_btn"] = st.button(
+            "Load document",
+            type="primary",
+            width="stretch",
+        )
 
     return ui
 
@@ -570,7 +688,7 @@ with st.sidebar:
     st.header("Navigation")
     nav_page = st.radio(
         "Go to",
-        options=["OCR & Load", "DB / Collection Inspector"],
+        options=["OCR & Load", "DB / Collection Inspector", "Document Viewer"],
         index=0,
         label_visibility="collapsed",
     )
@@ -632,7 +750,7 @@ if nav_page == "OCR & Load":
                 data=uploaded_file.getvalue(),
                 file_name=uploaded_file.name,
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
             )
 
             st.divider()
@@ -713,7 +831,7 @@ if nav_page == "OCR & Load":
                     data=output_text.encode("utf-8"),
                     file_name=out_name,
                     mime="text/plain",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.caption(
@@ -816,15 +934,29 @@ if nav_page == "OCR & Load":
                     source_name=uploaded_file.name,
                     max_chunk_size=int(ui_state["chunk_size"]),
                     overlap=int(ui_state["chunk_overlap"]),
+                    chunk_by_page=bool(ui_state["chunk_by_page"]),
                     add_header=bool(ui_state["add_chunk_header"]),
                 )
                 docs = chunks_to_langchain_documents(chunks)
 
-                oracle_vector_store_load(docs)
+                target_collection = st.session_state.get(
+                    "ocr_target_collection", COLLECTION_NAME
+                )
+                with get_db_connection() as conn:
+                    existing_cols = OracleVSAdmin.list_collections(conn)
+                if target_collection not in existing_cols:
+                    raise ValueError(
+                        f"Target collection not found: {target_collection}. "
+                        "Create/select a valid collection first."
+                    )
+
+                oracle_vector_store_load(docs, target_collection)
 
                 st.session_state["chunks_count"] = len(docs)
                 st.session_state["last_chunk_error"] = None
-                st.success(f"Loaded {len(docs)} chunks to Vector Store.")
+                st.success(
+                    f"Loaded {len(docs)} chunks to Vector Store ({target_collection})."
+                )
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 st.session_state["chunks_count"] = None
                 st.session_state["last_chunk_error"] = (
@@ -837,7 +969,7 @@ if nav_page == "OCR & Load":
 # ----------------------------
 # DB / COLLECTION INSPECTOR PAGE
 # ----------------------------
-else:
+elif nav_page == "DB / Collection Inspector":
     with left:
         st.subheader("DB / Collection status")
 
@@ -884,10 +1016,95 @@ else:
         if not collection_rows:
             st.warning("No documents found in collection.")
         else:
-            st.dataframe(collection_rows, use_container_width=True, hide_index=True)
+            st.dataframe(collection_rows, width="stretch", hide_index=True)
 
             total_docs = len(collection_rows)
             total_chunks = sum(int(r.get("n_chunks", 0)) for r in collection_rows)
             st.caption(
                 f"Total documents: **{total_docs}** · Total chunks: **{total_chunks}**"
             )
+
+# ----------------------------
+# DOCUMENT VIEWER PAGE
+# ----------------------------
+else:
+    if ui_state.get("load_document_btn"):
+        selected_collection = st.session_state.get("viewer_collection", COLLECTION_NAME)
+        selected_document = st.session_state.get("viewer_document", "")
+        try:
+            with get_db_connection() as conn:
+                viewer_rows = OracleVSAdmin.get_document_chunks(
+                    conn, selected_collection, selected_document
+                )
+            st.session_state["viewer_rows"] = viewer_rows
+            st.session_state["viewer_rows_for_collection"] = selected_collection
+            st.session_state["viewer_rows_for_document"] = selected_document
+            st.session_state["viewer_load_msg"] = (
+                f"Loaded {len(viewer_rows)} chunks from {selected_collection} / "
+                f"{selected_document}."
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            st.session_state["viewer_rows"] = None
+            st.session_state["viewer_rows_for_collection"] = selected_collection
+            st.session_state["viewer_rows_for_document"] = selected_document
+            st.session_state["viewer_load_msg"] = (
+                f"Load failed: {type(exc).__name__}: {exc}"
+            )
+
+    with left:
+        st.subheader("Selection")
+        shown_collection = st.session_state.get("viewer_rows_for_collection")
+        shown_document = st.session_state.get("viewer_rows_for_document")
+
+        if shown_collection:
+            st.write(f"**Collection:** `{shown_collection}`")
+        if shown_document:
+            st.write(f"**Document:** `{shown_document}`")
+
+        load_msg = st.session_state.get("viewer_load_msg")
+        if load_msg:
+            if "failed" in load_msg.lower():
+                st.error(load_msg)
+            else:
+                st.success(load_msg)
+        else:
+            st.info("Select collection/document in the sidebar, then push **Load document**.")
+
+        viewer_rows = st.session_state.get("viewer_rows")
+        if viewer_rows:
+            st.caption(f"Chunks loaded: {len(viewer_rows)}")
+
+    with right:
+        st.subheader("Document content")
+        viewer_rows = st.session_state.get("viewer_rows")
+
+        if viewer_rows is None:
+            st.info("No document loaded yet.")
+            st.stop()
+
+        if not viewer_rows:
+            st.warning("No chunks found for selected document.")
+            st.stop()
+
+        render_markdown = st.checkbox(
+            "Render Markdown",
+            value=False,
+            help="Turn on if chunks contain markdown tables/headings.",
+        )
+
+        text_parts = []
+        for row in viewer_rows:
+            page_label = (row.get("page_label") or "").strip()
+            chunk_text = row.get("text") or ""
+            if page_label:
+                text_parts.append(f"## Page {page_label}\n\n{chunk_text}")
+            else:
+                text_parts.append(chunk_text)
+        full_document_text = "\n\n".join(text_parts).strip()
+
+        if render_markdown:
+            st.markdown(full_document_text)
+            with st.expander("Raw text", expanded=False):
+                st.text_area("Raw", full_document_text, height=260)
+        else:
+            st.text_area("Document", full_document_text, height=720)

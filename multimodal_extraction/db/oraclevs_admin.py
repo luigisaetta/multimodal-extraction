@@ -136,6 +136,52 @@ class OracleVSAdmin(OracleVS):
         return out
 
     @classmethod
+    def get_document_chunks(
+        cls, connection: Connection, collection_name: str, document_source: str
+    ) -> List[Dict[str, str]]:
+        """
+        Return ordered chunks for one document source.
+
+        Output rows are dictionaries with:
+          - page_label: page identifier from METADATA.page_label (or "")
+          - text: chunk text stored in TEXT
+        """
+        safe_name = _safe_ident(collection_name)
+
+        sql = f"""
+            SELECT
+                json_value(METADATA, '$.page_label') AS page_label,
+                TEXT
+            FROM {safe_name}
+            WHERE json_value(METADATA, '$.source') = :doc
+            ORDER BY
+                CASE
+                    WHEN REGEXP_LIKE(
+                        json_value(METADATA, '$.page_label'),
+                        '^[0-9]+$'
+                    )
+                    THEN TO_NUMBER(json_value(METADATA, '$.page_label'))
+                END NULLS LAST,
+                json_value(METADATA, '$.page_label'),
+                ROWID
+        """
+
+        with connection.cursor() as cur:
+            cur.execute(sql, {"doc": document_source})
+            rows = cur.fetchall()
+
+        out: List[Dict[str, str]] = []
+        for row in rows:
+            page_label = ""
+            if row and row[0] is not None:
+                page_label = str(row[0])
+            text = ""
+            if row and row[1] is not None:
+                text = str(row[1])
+            out.append({"page_label": page_label, "text": text})
+        return out
+
+    @classmethod
     def analyze_collection(cls, connection: Connection, collection_name: str) -> str:
         """
         Analyze a collection and return a short report including:

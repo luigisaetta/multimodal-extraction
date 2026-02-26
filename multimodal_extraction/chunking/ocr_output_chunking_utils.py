@@ -205,40 +205,38 @@ def ocr_output_text_to_chunks(
     source_name: str,
     max_chunk_size: int = 1500,  # kept for interface compatibility
     overlap: int = 100,  # kept for interface compatibility
+    chunk_by_page: bool = True,
     add_header: bool = True,
 ) -> List[OcrChunk]:
     """
     Convert OCR output text into a list of OcrChunk objects.
 
-    Strategy (current):
+    Strategy:
     - Parse OCR output into per-page blocks.
-    - Create exactly ONE chunk per page (no intra-page splitting).
+    - If chunk_by_page=True: create one chunk per page.
+    - If chunk_by_page=False: split each page by max_chunk_size/overlap.
     - Attach metadata: {source, page_label, extraction=ocr}.
     - Optionally prepend a stable header containing ONLY the source file name:
         ---
         source_file: <source_name>
         ---
 
-    Notes:
-    - max_chunk_size and overlap are kept for backward compatibility
-      but are not used in the one-chunk-per-page strategy.
-
     Args:
         full_text: Full OCR output text (e.g., content of output.txt).
         source_name: A short source name (usually the original PDF filename).
-        max_chunk_size: Unused in this strategy (kept for compatibility).
-        overlap: Unused in this strategy (kept for compatibility).
+        max_chunk_size: Target size when chunk_by_page=False.
+        overlap: Overlap when chunk_by_page=False.
+        chunk_by_page: If True, keep one chunk per page.
         add_header: If True, prepends the header block to each chunk.
 
     Returns:
-        List of OcrChunk objects (one per non-empty page).
+        List of OcrChunk objects.
     """
-    _ = max_chunk_size
-    _ = overlap
-
     pages = parse_pages_from_ocr_output(full_text)
     chunks: List[OcrChunk] = []
     header = make_chunk_header(source_name) if add_header else ""
+    safe_chunk_size = max(1, int(max_chunk_size))
+    safe_overlap = max(0, min(int(overlap), safe_chunk_size - 1))
 
     for page_num, page_text in pages:
         page_label = str(page_num)
@@ -247,19 +245,29 @@ def ocr_output_text_to_chunks(
         if not txt:
             continue
 
-        if add_header:
-            txt = header + txt
+        page_chunks = (
+            [txt]
+            if chunk_by_page
+            else chunk_text(txt, max_chunk_size=safe_chunk_size, overlap=safe_overlap)
+        )
 
         md = build_metadata(source_name, page_label)
-        chunks.append(
-            OcrChunk(
-                text=txt,
-                source_name=source_name,
-                page_label=page_label,
-                chunk_index=len(chunks),
-                metadata=md,
+
+        for piece in page_chunks:
+            piece = (piece or "").strip()
+            if not piece:
+                continue
+            if add_header:
+                piece = header + piece
+            chunks.append(
+                OcrChunk(
+                    text=piece,
+                    source_name=source_name,
+                    page_label=page_label,
+                    chunk_index=len(chunks),
+                    metadata=md,
+                )
             )
-        )
 
     return chunks
 
@@ -269,6 +277,7 @@ def ocr_output_file_to_chunks(
     source_name: Optional[str] = None,
     max_chunk_size: int = 1500,
     overlap: int = 100,
+    chunk_by_page: bool = True,
     add_header: bool = True,
     encoding: str = "utf-8",
 ) -> List[OcrChunk]:
@@ -282,6 +291,7 @@ def ocr_output_file_to_chunks(
             - otherwise uses the output file name
         max_chunk_size: Kept for compatibility (unused in one-page strategy).
         overlap: Kept for compatibility (unused in one-page strategy).
+        chunk_by_page: If True, keep one chunk per page.
         add_header: If True, prepends the header block to each chunk.
         encoding: File encoding.
 
@@ -300,6 +310,7 @@ def ocr_output_file_to_chunks(
         source_name=inferred,
         max_chunk_size=max_chunk_size,
         overlap=overlap,
+        chunk_by_page=chunk_by_page,
         add_header=add_header,
     )
 

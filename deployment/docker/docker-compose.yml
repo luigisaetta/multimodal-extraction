@@ -1,0 +1,24 @@
+services:
+  streamlit-ui:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+    container_name: multimodal-extraction-ui
+    working_dir: /app
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - multimodal_extraction/ui/streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+    environment:
+      PYTHONPATH: /app
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../../:/app
+    restart: unless-stopped

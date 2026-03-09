@@ -1,5 +1,6 @@
 config_private.py
 config_private.py.cig
+config.private.luigi
 
 # Python
 __pycache__/

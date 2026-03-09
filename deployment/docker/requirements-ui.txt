@@ -1,0 +1,16 @@
+streamlit
+streamlit_pdf_viewer
+pypdfium2
+pypdf
+docling
+
+oci
+oracledb
+langchain-oci
+langchain-oracledb
+langchain-community
+langchain-core
+langchain-text-splitters
+
+jiwer
+tqdm

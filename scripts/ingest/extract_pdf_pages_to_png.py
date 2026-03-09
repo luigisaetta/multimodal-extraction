@@ -70,7 +70,7 @@ def list_pdf_files(input_dir: Path) -> list[Path]:
 def extract_pages_for_pdf(pdf_path: Path, out_root: Path, dpi: int) -> int:
     """Render all pages for one PDF and save page images."""
     out_dir = out_root / pdf_path.stem
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
 
     images = render_pdf_pages_reuse_or_fallback(pdf_path=pdf_path, dpi=dpi)
     for idx, image in enumerate(images, start=1):
@@ -128,13 +128,33 @@ def main() -> None:
     logger.info("Found %d PDF file(s) in %s", len(pdf_files), input_dir)
 
     total_pages = 0
+    skipped_pdfs = 0
     for i, pdf_path in enumerate(pdf_files, start=1):
+        out_dir = base_dir / pdf_path.stem
+        if out_dir.exists():
+            skipped_pdfs += 1
+            logger.info(
+                "[%d/%d] Skipping %s (destination already exists: %s)",
+                i,
+                len(pdf_files),
+                pdf_path.name,
+                out_dir,
+            )
+            continue
+
         logger.info("[%d/%d] Processing %s", i, len(pdf_files), pdf_path.name)
         pages = extract_pages_for_pdf(pdf_path=pdf_path, out_root=base_dir, dpi=dpi)
         total_pages += pages
         logger.info("Saved %d page(s) under %s", pages, base_dir / pdf_path.stem)
 
-    logger.info("Done. PDFs=%d, pages=%d, output=%s", len(pdf_files), total_pages, base_dir)
+    logger.info(
+        "Done. PDFs=%d, skipped=%d, processed=%d, pages=%d, output=%s",
+        len(pdf_files),
+        skipped_pdfs,
+        len(pdf_files) - skipped_pdfs,
+        total_pages,
+        base_dir,
+    )
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ Fix:
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,11 @@ from multimodal_extraction.db.db_utils import get_db_connection, get_connection_
 from multimodal_extraction.utils import get_console_logger, print_chunks_loaded
 
 logger = get_console_logger()
+
+_VIS_CHUNK_HEADER_RE = re.compile(
+    r"^\s*---\s*\r?\n[^\r\n]+\.pdf\s*\r?\n---\s*(?:\r?\n)?",
+    flags=re.IGNORECASE,
+)
 
 
 # ----------------------------
@@ -133,6 +139,20 @@ def reset_outputs_for_new_upload() -> None:
     st.session_state["comparison_result"] = None
 
 
+def strip_visual_chunk_header(chunk_text: str) -> str:
+    """
+    Remove optional leading chunk header only for UI visualization.
+
+    Expected header format:
+    ---
+    some_file.pdf
+    ---
+    """
+    if not chunk_text:
+        return ""
+    return _VIS_CHUNK_HEADER_RE.sub("", chunk_text, count=1)
+
+
 def init_session_state() -> None:
     """Initialize Streamlit session_state keys used by this app."""
     defaults: dict[str, Any] = {
@@ -153,6 +173,11 @@ def init_session_state() -> None:
         "collection_rows_for": None,
         "collection_create_ok": None,
         "collection_create_msg": None,
+        "doc_delete_target": "",
+        "doc_delete_confirm_name": "",
+        "doc_delete_ack": False,
+        "doc_delete_ok": None,
+        "doc_delete_msg": None,
         "drop_confirm_name": "",
         "collection_drop_ok": None,
         "collection_drop_msg": None,
@@ -214,6 +239,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         "ocr_target_collection": None,
         "new_collection_name": "",
         "create_collection_btn": False,
+        "delete_document_btn": False,
         "drop_collection_btn": False,
         "check_image_payload_btn": False,
         "viewer_collection": None,
@@ -523,6 +549,7 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
         if available_cols:
             if selected_collection not in available_cols:
                 selected_collection = available_cols[0]
+            previous_selected_collection = selected_collection
             ui["selected_collection"] = st.selectbox(
                 "Collection",
                 options=available_cols,
@@ -530,6 +557,12 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                 help="Choose the collection to inspect.",
             )
             st.session_state["selected_collection"] = ui["selected_collection"]
+            if ui["selected_collection"] != previous_selected_collection:
+                st.session_state["doc_delete_target"] = ""
+                st.session_state["doc_delete_confirm_name"] = ""
+                st.session_state["doc_delete_ack"] = False
+                st.session_state["doc_delete_ok"] = None
+                st.session_state["doc_delete_msg"] = None
             ui["show_docs_btn"] = st.button(
                 "Show documents",
                 type="secondary",
@@ -555,6 +588,139 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                         f"Load failed for {ui['selected_collection']}: "
                         f"{type(exc).__name__}: {exc}"
                     )
+
+            st.divider()
+            st.subheader("Delete one document (all chunks)")
+            st.caption(
+                "Deletes ALL chunks where METADATA.source matches the selected document."
+            )
+
+            docs_for_delete: list[dict[str, Any]] = []
+            try:
+                with get_db_connection() as conn:
+                    docs_for_delete = OracleVSAdmin.list_documents_with_chunk_counts(
+                        conn, ui["selected_collection"]
+                    )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                st.error(
+                    "Cannot load documents for deletion: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+            if not docs_for_delete:
+                st.info("No documents available to delete in selected collection.")
+            else:
+                delete_options = [str(row.get("document", "")) for row in docs_for_delete]
+                chunks_by_document = {
+                    str(row.get("document", "")): int(row.get("n_chunks", 0))
+                    for row in docs_for_delete
+                }
+
+                current_target = st.session_state.get("doc_delete_target", "")
+                if current_target not in delete_options:
+                    current_target = delete_options[0]
+
+                st.session_state["doc_delete_target"] = st.selectbox(
+                    "Document to delete",
+                    options=delete_options,
+                    index=delete_options.index(current_target),
+                    help="This is METADATA.source. All related chunks will be deleted.",
+                )
+                selected_doc = st.session_state["doc_delete_target"]
+                expected_chunks = int(chunks_by_document.get(selected_doc, 0))
+                st.caption(f"Chunks that will be deleted: **{expected_chunks}**")
+
+                st.session_state["doc_delete_confirm_name"] = st.text_input(
+                    "Type exact document name to confirm delete",
+                    value=st.session_state.get("doc_delete_confirm_name", ""),
+                    help="Safety check to avoid deleting the wrong document.",
+                )
+                st.session_state["doc_delete_ack"] = st.checkbox(
+                    "I understand this permanently deletes all chunks for this document.",
+                    value=bool(st.session_state.get("doc_delete_ack", False)),
+                )
+                ui["delete_document_btn"] = st.button(
+                    "Delete selected document",
+                    type="secondary",
+                    width="stretch",
+                )
+
+                if ui["delete_document_btn"]:
+                    confirm_doc = st.session_state.get(
+                        "doc_delete_confirm_name", ""
+                    ).strip()
+                    ack_delete = bool(st.session_state.get("doc_delete_ack", False))
+
+                    if confirm_doc != selected_doc:
+                        st.session_state["doc_delete_ok"] = False
+                        st.session_state["doc_delete_msg"] = (
+                            "Delete blocked: confirmation text does not match "
+                            "the selected document name."
+                        )
+                    elif not ack_delete:
+                        st.session_state["doc_delete_ok"] = False
+                        st.session_state["doc_delete_msg"] = (
+                            "Delete blocked: acknowledge the permanent delete checkbox."
+                        )
+                    elif expected_chunks <= 0:
+                        st.session_state["doc_delete_ok"] = False
+                        st.session_state["doc_delete_msg"] = (
+                            "Delete blocked: selected document has 0 chunks."
+                        )
+                    else:
+                        try:
+                            with get_db_connection() as conn:
+                                OracleVSAdmin.delete_documents(
+                                    conn, ui["selected_collection"], [selected_doc]
+                                )
+                                rows_after = (
+                                    OracleVSAdmin.list_documents_with_chunk_counts(
+                                        conn, ui["selected_collection"]
+                                    )
+                                )
+
+                            remaining_map = {
+                                str(row.get("document", "")): int(
+                                    row.get("n_chunks", 0)
+                                )
+                                for row in rows_after
+                            }
+                            remaining_chunks = int(remaining_map.get(selected_doc, 0))
+
+                            if remaining_chunks > 0:
+                                st.session_state["doc_delete_ok"] = False
+                                st.session_state["doc_delete_msg"] = (
+                                    f"Delete warning: document {selected_doc} still has "
+                                    f"{remaining_chunks} chunk(s)."
+                                )
+                            else:
+                                st.session_state["doc_delete_ok"] = True
+                                st.session_state["doc_delete_msg"] = (
+                                    f"Document deleted: {selected_doc} "
+                                    f"({expected_chunks} chunk(s) removed)."
+                                )
+
+                            st.session_state["collection_rows"] = rows_after
+                            st.session_state["collection_rows_for"] = ui[
+                                "selected_collection"
+                            ]
+                            st.session_state["collection_load_msg"] = (
+                                f"Loaded {len(rows_after)} documents from collection "
+                                f"{ui['selected_collection']}."
+                            )
+                            st.session_state["doc_delete_confirm_name"] = ""
+                            st.session_state["doc_delete_ack"] = False
+                            st.rerun()
+                        except Exception as exc:  # pylint: disable=broad-exception-caught
+                            st.session_state["doc_delete_ok"] = False
+                            st.session_state["doc_delete_msg"] = (
+                                f"Delete failed: {type(exc).__name__}: {exc}"
+                            )
+
+                if st.session_state.get("doc_delete_ok") is True:
+                    st.success(st.session_state.get("doc_delete_msg", ""))
+                elif st.session_state.get("doc_delete_ok") is False:
+                    st.error(st.session_state.get("doc_delete_msg", ""))
 
             st.divider()
             st.subheader("Danger zone")
@@ -596,6 +762,11 @@ def build_sidebar_inputs(current_page: str) -> dict[str, Any]:
                         st.session_state["collection_rows"] = None
                         st.session_state["collection_rows_for"] = None
                         st.session_state["collection_load_msg"] = None
+                        st.session_state["doc_delete_target"] = ""
+                        st.session_state["doc_delete_confirm_name"] = ""
+                        st.session_state["doc_delete_ack"] = False
+                        st.session_state["doc_delete_ok"] = None
+                        st.session_state["doc_delete_msg"] = None
                         if refreshed:
                             st.session_state["selected_collection"] = refreshed[0]
                         else:
@@ -1095,7 +1266,7 @@ else:
         text_parts = []
         for row in viewer_rows:
             page_label = (row.get("page_label") or "").strip()
-            chunk_text = row.get("text") or ""
+            chunk_text = strip_visual_chunk_header(row.get("text") or "")
             if page_label:
                 text_parts.append(f"## Page {page_label}\n\n{chunk_text}")
             else:
